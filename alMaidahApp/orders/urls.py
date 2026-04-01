@@ -1,0 +1,33 @@
+from django.urls import path
+from .views import (
+    OrderListAPIView,
+    OrderDetailAPIView,
+    CreateOrderAPIView,
+    ActiveOrdersAPIView,
+    UpdateOrderAPIView,
+    CollectPaymentAPIView,
+    ReadyOrderAPIView,
+    CompleteOrderAPIView,
+    CancelOrderAPIView,
+    OrdersFilterAPIView,
+    OrderDisplayAPIView,
+    StartScheduledOrderAPIView
+)
+
+urlpatterns = [
+
+    path("orders/", OrderListAPIView.as_view()),
+    path("orders/<int:pk>/", OrderDetailAPIView.as_view()),
+    path("orders/create/", CreateOrderAPIView.as_view()),
+    path("orders/active/", ActiveOrdersAPIView.as_view()),
+    path("orders/<int:pk>/update/", UpdateOrderAPIView.as_view()),
+    path("orders/<int:pk>/collect-payment/", CollectPaymentAPIView.as_view()),
+    path("orders/<int:pk>/ready/", ReadyOrderAPIView.as_view()),
+    path("orders/<int:pk>/complete/", CompleteOrderAPIView.as_view()),
+    path("orders/<int:pk>/cancel/", CancelOrderAPIView.as_view()),
+    path("orders/filter/", OrdersFilterAPIView.as_view()),
+    path("orders/display/", OrderDisplayAPIView.as_view()),
+    path("orders/<int:order_id>/start/",StartScheduledOrderAPIView.as_view())
+    
+
+]
