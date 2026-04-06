@@ -36,9 +36,28 @@ def ensure_draft_bill(bill: PurchaseBill):
         raise ValidationError("Only draft bills can be changed.")
 
 
+def get_latest_unit_price_for_product(product: Product):
+    latest_item = (
+        PurchaseItem.objects.filter(product=product)
+        .order_by("-created_at", "-id")
+        .only("unit_price")
+        .first()
+    )
+    return latest_item.unit_price if latest_item else None
+
+
 @transaction.atomic
 def add_purchase_item(*, bill: PurchaseBill, product, quantity, unit_price):
     ensure_draft_bill(bill)
+
+    if unit_price is None:
+        unit_price = get_latest_unit_price_for_product(product)
+
+    if unit_price is None:
+        raise ValidationError(
+            "Enter unit_price because last price for the same item wasn't found."
+        )
+
     item = PurchaseItem.objects.create(
         bill=bill,
         product=product,

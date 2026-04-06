@@ -12,22 +12,30 @@ from .services import (
     add_purchase_item,
     create_stock_adjustment,
     ensure_draft_bill,
+    get_latest_unit_price_for_product,
     recalculate_purchase_bill_total,
     update_purchase_item,
 )
 
 
-class ProductSerializer(serializers.ModelSerializer):
+class ProductBaseSerializer(serializers.ModelSerializer):
+    last_unit_price = serializers.SerializerMethodField()
+
+    def get_last_unit_price(self, obj):
+        return get_latest_unit_price_for_product(obj)
+
+
+class ProductSerializer(ProductBaseSerializer):
     class Meta:
         model = Product
-        fields = ["id", "name", "unit", "low_stock_threshold", "created_at"]
+        fields = ["id", "name", "unit", "low_stock_threshold", "last_unit_price", "created_at"]
         read_only_fields = ["id", "created_at"]
 
 
-class ProductMiniSerializer(serializers.ModelSerializer):
+class ProductMiniSerializer(ProductBaseSerializer):
     class Meta:
         model = Product
-        fields = ["id", "name", "unit", "low_stock_threshold"]
+        fields = ["id", "name", "unit", "low_stock_threshold", "last_unit_price"]
         read_only_fields = fields
 
 
@@ -91,6 +99,12 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
     )
     bill = serializers.IntegerField(source="bill.id", read_only=True)
     product = ProductMiniSerializer(read_only=True)
+    unit_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = PurchaseItem
@@ -121,15 +135,20 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
         return value
 
     def validate_unit_price(self, value):
+        if value is None:
+            return value
         if value <= 0:
             raise serializers.ValidationError("Unit price must be greater than zero.")
         return value
 
     def create(self, validated_data):
+        validated_data.setdefault("unit_price", None)
         return add_purchase_item(**validated_data)
 
     def update(self, instance, validated_data):
         validated_data.pop("bill", None)
+        if validated_data.get("unit_price") is None:
+            validated_data.pop("unit_price", None)
         return update_purchase_item(instance, **validated_data)
 
 

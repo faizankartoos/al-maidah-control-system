@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../services/api";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const ACTIVE_BILL_KEY = "inventory_active_bill_id";
 const STOCK_OUT_REASONS = [
@@ -9,6 +11,13 @@ const STOCK_OUT_REASONS = [
   "Wastage",
   "Sample",
   "Other",
+];
+const INVENTORY_DETAIL_TABS = [
+  { id: "snapshot", label: "Current Inventory Snapshot" },
+  { id: "alerts", label: "Low Stock Alerts" },
+  { id: "adjustments", label: "Manual Stock Adjustment" },
+  { id: "stock-out-log", label: "Recent Stock Out Log" },
+  { id: "history", label: "Inventory History" },
 ];
 
 function getToday() {
@@ -124,6 +133,7 @@ export default function InventoryTab() {
   const [bills, setBills] = useState([]);
   const [stockOutLogs, setStockOutLogs] = useState([]);
   const [lowStockItems, setLowStockItems] = useState([]);
+  const [lowStockQuantityFilter, setLowStockQuantityFilter] = useState("");
   const [historyData, setHistoryData] = useState({
     summary: {
       total_entries: 0,
@@ -136,6 +146,9 @@ export default function InventoryTab() {
   const [activeBill, setActiveBill] = useState(null);
   const [editingItemId, setEditingItemId] = useState(null);
   const [inventorySearch, setInventorySearch] = useState("");
+  const [inventoryDetailTab, setInventoryDetailTab] = useState("snapshot");
+  const [productMode, setProductMode] = useState("create");
+  const [selectedProductId, setSelectedProductId] = useState("");
 
   const [productName, setProductName] = useState("");
   const [productUnit, setProductUnit] = useState("");
@@ -162,6 +175,20 @@ export default function InventoryTab() {
     () => bills.filter((bill) => bill.status === "CONFIRMED").slice(0, 5),
     [bills]
   );
+
+  const filteredLowStockItems = useMemo(() => {
+    if (lowStockQuantityFilter === "") {
+      return lowStockItems;
+    }
+
+    const targetQuantity = Number(lowStockQuantityFilter);
+
+    if (Number.isNaN(targetQuantity)) {
+      return lowStockItems;
+    }
+
+    return lowStockItems.filter((item) => Number(item.quantity) === targetQuantity);
+  }, [lowStockItems, lowStockQuantityFilter]);
 
   const filteredInventory = useMemo(() => {
     const search = inventorySearch.trim().toLowerCase();
@@ -200,6 +227,31 @@ export default function InventoryTab() {
   const selectedAdjustmentInventory = adjustmentForm.product_id
     ? inventoryByProductId.get(adjustmentForm.product_id)
     : null;
+
+  const getProductById = (productId) =>
+    products.find((product) => String(product.id) === String(productId));
+
+  const getLastKnownUnitPrice = (productId) => {
+    const product = getProductById(productId);
+    return product?.last_unit_price ? String(product.last_unit_price) : "";
+  };
+
+  const resetProductEditor = (mode = "create") => {
+    setProductMode(mode);
+    setSelectedProductId("");
+    setProductName("");
+    setProductUnit("");
+    setProductLowStockThreshold("");
+  };
+
+  const loadProductIntoEditor = (productId) => {
+    const product = getProductById(productId);
+
+    setSelectedProductId(productId);
+    setProductName(product?.name || "");
+    setProductUnit(product?.unit || "");
+    setProductLowStockThreshold(String(product?.low_stock_threshold ?? ""));
+  };
 
   useEffect(() => {
     loadDashboard();
@@ -345,19 +397,55 @@ export default function InventoryTab() {
 
     try {
       setBusyAction("create-product");
-      const res = await api.post("/products/", {
-        name: productName.trim(),
-        unit: productUnit.trim(),
-        low_stock_threshold: productLowStockThreshold || "0",
-      });
 
-      setProductName("");
-      setProductUnit("");
-      setProductLowStockThreshold("");
-      await Promise.all([fetchProducts(), fetchLowStockItems()]);
-      setSuccess(`${res.data.name} created successfully.`);
+      let res;
+
+      if (productMode === "edit") {
+        if (!selectedProductId) {
+          setError("Choose an existing item to edit.");
+          return;
+        }
+
+        res = await api.patch(`/products/${selectedProductId}/`, {
+          name: productName.trim(),
+          unit: productUnit.trim(),
+          low_stock_threshold: productLowStockThreshold || "0",
+        });
+      } else {
+        res = await api.post("/products/", {
+          name: productName.trim(),
+          unit: productUnit.trim(),
+          low_stock_threshold: productLowStockThreshold || "0",
+        });
+      }
+
+      await Promise.all([
+        fetchProducts(),
+        fetchInventory(),
+        fetchBills(),
+        fetchStockOutLogs(),
+        fetchLowStockItems(),
+        fetchHistory(),
+        activeBill?.id ? loadBillDetail(activeBill.id) : Promise.resolve(),
+      ]);
+
+      if (productMode === "edit") {
+        setSelectedProductId(String(res.data.id));
+        setProductName(res.data.name);
+        setProductUnit(res.data.unit);
+        setProductLowStockThreshold(String(res.data.low_stock_threshold ?? "0"));
+        setSuccess(`${res.data.name} updated successfully.`);
+      } else {
+        resetProductEditor("create");
+        setSuccess(`${res.data.name} created successfully.`);
+      }
     } catch (err) {
-      setError(extractError(err, "Failed to create item."));
+      setError(
+        extractError(
+          err,
+          productMode === "edit" ? "Failed to update item." : "Failed to create item."
+        )
+      );
     } finally {
       setBusyAction("");
     }
@@ -462,8 +550,8 @@ export default function InventoryTab() {
       return;
     }
 
-    if (!itemForm.product_id || !itemForm.quantity || !itemForm.unit_price) {
-      setError("Choose item, quantity, and unit price.");
+    if (!itemForm.product_id || !itemForm.quantity) {
+      setError("Choose item and quantity.");
       return;
     }
 
@@ -471,7 +559,7 @@ export default function InventoryTab() {
       bill_id: activeBill.id,
       product_id: itemForm.product_id,
       quantity: itemForm.quantity,
-      unit_price: itemForm.unit_price,
+      unit_price: itemForm.unit_price || null,
     };
 
     try {
@@ -616,7 +704,7 @@ export default function InventoryTab() {
       bill_number: "",
       bill_date: getToday(),
       quantity: "",
-      unit_price: "",
+      unit_price: getLastKnownUnitPrice(inventoryItem.product),
     });
   };
 
@@ -647,10 +735,9 @@ export default function InventoryTab() {
       !quickAddStockForm.product_id ||
       !quickAddStockForm.supplier_name.trim() ||
       !quickAddStockForm.bill_date ||
-      !quickAddStockForm.quantity ||
-      !quickAddStockForm.unit_price
+      !quickAddStockForm.quantity
     ) {
-      setError("Enter supplier, bill date, quantity, and unit price.");
+      setError("Enter supplier, bill date, and quantity.");
       return;
     }
 
@@ -672,7 +759,7 @@ export default function InventoryTab() {
           bill_id: createdBill.id,
           product_id: quickAddStockForm.product_id,
           quantity: quickAddStockForm.quantity,
-          unit_price: quickAddStockForm.unit_price,
+          unit_price: quickAddStockForm.unit_price || null,
         });
       } catch (err) {
         await loadBillDetail(createdBill.id);
@@ -761,16 +848,18 @@ export default function InventoryTab() {
   };
 
   const focusAlertEditor = (productId) => {
+    setInventoryDetailTab("alerts");
     handleAlertProductChange(String(productId));
-    scrollToSection("inventory-alerts");
+    scrollToSection("inventory-detail-tabs");
   };
 
   const focusAdjustmentForm = (productId) => {
+    setInventoryDetailTab("adjustments");
     setAdjustmentForm((current) => ({
       ...current,
       product_id: String(productId),
     }));
-    scrollToSection("inventory-adjustments");
+    scrollToSection("inventory-detail-tabs");
   };
 
   const handleSaveAlertThreshold = async () => {
@@ -841,6 +930,138 @@ export default function InventoryTab() {
     }
   };
 
+  const handleProductModeChange = (mode) => {
+    resetMessages();
+    resetProductEditor(mode);
+  };
+
+  const handleProductEditorSelection = (productId) => {
+    if (!productId) {
+      resetProductEditor("edit");
+      return;
+    }
+
+    loadProductIntoEditor(productId);
+  };
+
+  const handleExportLowStockPdf = () => {
+    resetMessages();
+
+    if (!filteredLowStockItems.length) {
+      setError("No low-stock items available for export with the current filter.");
+      return;
+    }
+
+    const doc = new jsPDF({
+      orientation: "portrait",
+      unit: "pt",
+      format: "a4",
+    });
+
+    const generatedAt = new Date().toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+    doc.setFillColor(18, 24, 38);
+    doc.rect(0, 0, 595.28, 110, "F");
+
+    doc.setTextColor(245, 247, 250);
+    doc.setFont("times", "bold");
+    doc.setFontSize(23);
+    doc.text("Al- Maidah Cafe & Restaurant", 40, 48);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text("Established 2022", 40, 68);
+    doc.text("Low Stock Alert Register", 40, 88);
+
+    doc.setTextColor(60, 72, 88);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.text(`Generated: ${generatedAt}`, 40, 136);
+    doc.text(
+      `Quantity filter: ${lowStockQuantityFilter === "" ? "All alert quantities" : `Current stock = ${lowStockQuantityFilter}`}`,
+      40,
+      152
+    );
+    doc.text(`Total matching items: ${filteredLowStockItems.length}`, 40, 168);
+
+    autoTable(doc, {
+      startY: 190,
+      head: [[
+        "Item",
+        "Current Stock",
+        "Unit",
+        "Alert At",
+        "Shortage",
+        "Status",
+        "Last Updated",
+      ]],
+      body: filteredLowStockItems.map((item) => [
+        item.product_name,
+        String(item.quantity),
+        item.unit,
+        String(item.low_stock_threshold),
+        String(item.shortage_quantity),
+        Number(item.quantity) === 0 ? "Out of Stock" : "Low Stock",
+        item.updated_at ? formatDateTime(item.updated_at) : "-",
+      ]),
+      theme: "grid",
+      headStyles: {
+        fillColor: [27, 38, 59],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+      },
+      styles: {
+        font: "helvetica",
+        fontSize: 9,
+        cellPadding: 8,
+        textColor: [33, 37, 41],
+        lineColor: [222, 226, 230],
+      },
+      bodyStyles: {
+        fillColor: [255, 255, 255],
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
+      },
+      didParseCell: (data) => {
+        const row = filteredLowStockItems[data.row.index];
+
+        if (!row || data.section !== "body") return;
+
+        if (Number(row.quantity) === 0) {
+          data.cell.styles.fillColor = [255, 235, 238];
+          data.cell.styles.textColor = [183, 28, 28];
+          if (data.column.index === 5) {
+            data.cell.styles.fontStyle = "bold";
+          }
+        }
+      },
+      margin: { left: 40, right: 40, bottom: 48 },
+    });
+
+    const pageCount = doc.getNumberOfPages();
+    for (let page = 1; page <= pageCount; page += 1) {
+      doc.setPage(page);
+      doc.setTextColor(110, 118, 129);
+      doc.setFontSize(9);
+      doc.text(
+        `Al- Maidah Cafe & Restaurant • Low Stock Alert Register • Page ${page} of ${pageCount}`,
+        40,
+        820
+      );
+    }
+
+    doc.save(`al-maidah-low-stock-alerts-${new Date().toISOString().split("T")[0]}.pdf`);
+    setSuccess("Low stock PDF exported successfully.");
+  };
+
   if (loading) {
     return <div className="text-gray-300">Loading inventory dashboard...</div>;
   }
@@ -873,8 +1094,38 @@ export default function InventoryTab() {
       <div className="grid gap-6 xl:grid-cols-[1.1fr,1.4fr]">
         <Section
           title="Create New Item"
-          description="Add a raw inventory item once. You can also set the low-stock warning level right away."
+          description="Add a raw inventory item once, or switch to edit mode to rename and update an existing one."
         >
+          <div className="mb-4 flex flex-wrap gap-2">
+            <SubTabButton
+              active={productMode === "create"}
+              onClick={() => handleProductModeChange("create")}
+            >
+              Create New
+            </SubTabButton>
+            <SubTabButton
+              active={productMode === "edit"}
+              onClick={() => handleProductModeChange("edit")}
+            >
+              Edit Existing
+            </SubTabButton>
+          </div>
+
+          {productMode === "edit" && (
+            <div className="mb-4">
+              <SelectField
+                label="Choose Existing Item"
+                value={selectedProductId}
+                onChange={handleProductEditorSelection}
+                options={products.map((product) => ({
+                  value: String(product.id),
+                  label: `${product.name} (${product.unit})`,
+                }))}
+                placeholder="Select item to edit"
+              />
+            </div>
+          )}
+
           <div className="grid gap-4 md:grid-cols-3">
             <Field
               label="Item Name"
@@ -897,15 +1148,23 @@ export default function InventoryTab() {
             />
           </div>
           <InfoNote>
-            Warning appears when live stock becomes equal to or lower than this alert quantity. Use
-            `0` if you do not want alerts for this item.
+            {productMode === "edit"
+              ? "Renaming an item updates it everywhere inventory already uses that same product record."
+              : "Warning appears when live stock becomes equal to or lower than this alert quantity. Use `0` if you do not want alerts for this item."}
           </InfoNote>
-          <ActionButton
-            onClick={handleCreateProduct}
-            busy={busyAction === "create-product"}
-          >
-            Create Item
-          </ActionButton>
+          <div className="mt-4 flex flex-col gap-3 md:flex-row">
+            <ActionButton
+              onClick={handleCreateProduct}
+              busy={busyAction === "create-product"}
+            >
+              {productMode === "edit" ? "Save Item Changes" : "Create Item"}
+            </ActionButton>
+            {productMode === "edit" && (
+              <ActionButton onClick={() => resetProductEditor("create")} tone="secondary">
+                Back To Create
+              </ActionButton>
+            )}
+          </div>
         </Section>
 
         <Section
@@ -967,183 +1226,6 @@ export default function InventoryTab() {
           >
             Apply Stock Out
           </ActionButton>
-        </Section>
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[1.1fr,1fr]">
-        <Section
-          id="inventory-alerts"
-          title="Low Stock Alerts"
-          description="Warnings appear when current stock is less than or equal to the alert quantity set for that item."
-        >
-          <InfoNote>
-            Example: if you set rice alert to `5 kg`, it will show here as soon as live stock reaches
-            `5 kg` or below.
-          </InfoNote>
-
-          <div className="mt-4 grid gap-4 xl:grid-cols-[1.15fr,0.9fr]">
-            <div>
-              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
-                Active Warnings
-              </h4>
-              <div className="mt-3 space-y-3">
-                {lowStockItems.length ? (
-                  lowStockItems.map((item) => (
-                    <div
-                      key={item.product_id}
-                      className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4"
-                    >
-                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                        <div>
-                          <p className="font-medium text-white">{item.product_name}</p>
-                          <p className="text-sm text-amber-100/80">
-                            Current stock: {item.quantity} {item.unit}
-                          </p>
-                          <p className="mt-1 text-xs text-amber-100/70">
-                            Alert at {item.low_stock_threshold} {item.unit}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <SmallButton
-                            onClick={() => focusAlertEditor(item.product_id)}
-                            tone="secondary"
-                          >
-                            Edit Alert
-                          </SmallButton>
-                          <SmallButton
-                            onClick={() => focusAdjustmentForm(item.product_id)}
-                          >
-                            Adjust Stock
-                          </SmallButton>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <EmptyState text="No low-stock warnings right now." />
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
-              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
-                Alert Settings
-              </h4>
-              <div className="mt-4 grid gap-4">
-                <SelectField
-                  label="Item"
-                  value={alertForm.product_id}
-                  onChange={handleAlertProductChange}
-                  options={products.map((product) => ({
-                    value: String(product.id),
-                    label: `${product.name} (${product.unit})`,
-                  }))}
-                  placeholder="Choose item"
-                />
-                <Field
-                  label="Warn At Quantity"
-                  value={alertForm.low_stock_threshold}
-                  onChange={(value) =>
-                    setAlertForm((current) => ({
-                      ...current,
-                      low_stock_threshold: value,
-                    }))
-                  }
-                  type="number"
-                  placeholder="0.00"
-                />
-                <ActionButton
-                  onClick={handleSaveAlertThreshold}
-                  busy={busyAction === "save-alert-threshold"}
-                >
-                  Save Alert Level
-                </ActionButton>
-              </div>
-            </div>
-          </div>
-        </Section>
-
-        <Section
-          id="inventory-adjustments"
-          title="Manual Stock Adjustment"
-          description="Use this only for correction cases like count mismatch, damaged stock not logged earlier, or opening balance fixes."
-        >
-          <div className="grid gap-4 md:grid-cols-2">
-            <SelectField
-              label="Item"
-              value={adjustmentForm.product_id}
-              onChange={(value) =>
-                setAdjustmentForm((current) => ({ ...current, product_id: value }))
-              }
-              options={products.map((product) => ({
-                value: String(product.id),
-                label: `${product.name} (${product.unit})`,
-              }))}
-              placeholder="Choose item"
-            />
-            <Field
-              label="Quantity Change"
-              value={adjustmentForm.quantity_change}
-              onChange={(value) =>
-                setAdjustmentForm((current) => ({ ...current, quantity_change: value }))
-              }
-              type="number"
-              placeholder="+2.00 or -1.00"
-            />
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field
-              label="Unit Cost (Optional)"
-              value={adjustmentForm.unit_cost}
-              onChange={(value) =>
-                setAdjustmentForm((current) => ({ ...current, unit_cost: value }))
-              }
-              type="number"
-              placeholder="Needed when adding stock without existing cost"
-            />
-            <Field
-              label="Reason"
-              value={adjustmentForm.reason}
-              onChange={(value) =>
-                setAdjustmentForm((current) => ({ ...current, reason: value }))
-              }
-              placeholder="Example: Physical count correction"
-            />
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <ReadOnlyHint
-              label="Current Stock"
-              value={
-                selectedAdjustmentInventory
-                  ? `${selectedAdjustmentInventory.quantity} ${selectedAdjustmentInventory.unit}`
-                  : "0.00"
-              }
-            />
-            <ReadOnlyHint
-              label="Current Avg Cost"
-              value={
-                selectedAdjustmentInventory
-                  ? `Rs ${formatMoney(selectedAdjustmentInventory.average_unit_cost)}`
-                  : "Rs 0.00"
-              }
-            />
-          </div>
-
-          <InfoNote>
-            Use a positive number to add missing stock found during counting, and a negative number to
-            remove excess stock from the record.
-          </InfoNote>
-
-          <div className="mt-4">
-            <ActionButton
-              onClick={handleManualAdjustment}
-              busy={busyAction === "manual-adjustment"}
-            >
-              Apply Manual Adjustment
-            </ActionButton>
-          </div>
         </Section>
       </div>
 
@@ -1349,7 +1431,11 @@ export default function InventoryTab() {
                       label="Item"
                       value={itemForm.product_id}
                       onChange={(value) =>
-                        setItemForm((current) => ({ ...current, product_id: value }))
+                        setItemForm((current) => ({
+                          ...current,
+                          product_id: value,
+                          unit_price: getLastKnownUnitPrice(value),
+                        }))
                       }
                       options={products.map((product) => ({
                         value: String(product.id),
@@ -1367,15 +1453,24 @@ export default function InventoryTab() {
                       placeholder="0.00"
                     />
                     <Field
-                      label="Unit Price"
+                      label="Unit Price (Optional)"
                       value={itemForm.unit_price}
                       onChange={(value) =>
                         setItemForm((current) => ({ ...current, unit_price: value }))
                       }
                       type="number"
-                      placeholder="0.00"
+                      placeholder={
+                        itemForm.product_id && !getLastKnownUnitPrice(itemForm.product_id)
+                          ? "Required if no last price exists"
+                          : "Leave blank to reuse last price"
+                      }
                     />
                   </div>
+                  <InfoNote>
+                    {itemForm.product_id && getLastKnownUnitPrice(itemForm.product_id)
+                      ? `Last unit price found: Rs ${formatMoney(getLastKnownUnitPrice(itemForm.product_id))}. You can keep it or enter a new one.`
+                      : "If you leave unit price blank, the system will try to use the last price used for that same item."}
+                  </InfoNote>
                   <div className="mt-4 flex flex-col gap-3 md:flex-row">
                     <ActionButton
                       onClick={handleAddOrUpdateItem}
@@ -1455,209 +1550,455 @@ export default function InventoryTab() {
         </div>
       </Section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.5fr,1fr]">
-        <Section
-          title="Current Inventory Snapshot"
-          description="Search the live inventory anytime and jump straight into add-stock or stock-out actions."
-        >
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <Field
-              label="Search"
-              value={inventorySearch}
-              onChange={setInventorySearch}
-              placeholder="Search item name"
-            />
-            <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-sm text-gray-300">
-              Total value: <span className="font-semibold text-white">Rs {formatMoney(totalInventoryValue)}</span>
-            </div>
-          </div>
-
-          {filteredInventory.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1040px] text-left text-sm">
-                <thead>
-                  <tr className="border-b border-gray-800 text-gray-400">
-                    <th className="pb-3">Item</th>
-                    <th className="pb-3">Unit</th>
-                    <th className="pb-3">In Stock</th>
-                    <th className="pb-3">Alert At</th>
-                    <th className="pb-3">Status</th>
-                    <th className="pb-3">Avg Cost</th>
-                    <th className="pb-3">Total Value</th>
-                    <th className="pb-3">Updated</th>
-                    <th className="pb-3 text-right">Quick Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredInventory.map((item) => (
-                    <tr
-                      key={item.id}
-                      className={`border-b border-gray-900 text-gray-200 ${
-                        item.is_low_stock ? "bg-amber-500/5" : ""
-                      }`}
-                    >
-                      <td className="py-3">{item.product_name}</td>
-                      <td className="py-3">{item.unit}</td>
-                      <td className="py-3">{item.quantity}</td>
-                      <td className="py-3">{item.low_stock_threshold}</td>
-                      <td className="py-3">
-                        {item.is_low_stock ? (
-                          <ToneBadge tone="warning">Low Stock</ToneBadge>
-                        ) : (
-                          <ToneBadge tone="neutral">Healthy</ToneBadge>
-                        )}
-                      </td>
-                      <td className="py-3">Rs {formatMoney(item.average_unit_cost)}</td>
-                      <td className="py-3">Rs {formatMoney(item.total_value)}</td>
-                      <td className="py-3 text-gray-400">{formatDateTime(item.updated_at)}</td>
-                      <td className="py-3">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <SmallButton onClick={() => openQuickAddStockModal(item)}>
-                            Add Stock
-                          </SmallButton>
-                          <SmallButton
-                            onClick={() => focusAdjustmentForm(item.product)}
-                            tone="secondary"
-                          >
-                            Adjust
-                          </SmallButton>
-                          <SmallButton
-                            onClick={() => focusAlertEditor(item.product)}
-                            tone="secondary"
-                          >
-                            Set Alert
-                          </SmallButton>
-                          <SmallButton
-                            onClick={() => openQuickStockOutModal(item)}
-                            tone="danger"
-                          >
-                            Stock Out
-                          </SmallButton>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <EmptyState text="No inventory items match this search." />
-          )}
-        </Section>
-
-        <Section
-          title="Recent Stock Out Log"
-          description="See the latest outgoing stock movements in one place."
-        >
-          {stockOutLogs.length ? (
-            <div className="space-y-3">
-              {stockOutLogs.slice(0, 8).map((log) => (
-                <div
-                  key={log.id}
-                  className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="font-medium text-white">{log.product.name}</p>
-                      <p className="text-sm text-gray-400">{log.reason}</p>
-                    </div>
-                    <span className="rounded-full bg-rose-500/15 px-2 py-1 text-xs text-rose-300">
-                      -{log.quantity} {log.product.unit}
-                    </span>
-                  </div>
-                  <p className="mt-3 text-xs text-gray-500">{formatDateTime(log.used_at)}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState text="No stock out logs yet." />
-          )}
-        </Section>
-      </div>
-
       <Section
-        title="Inventory History"
-        description="One place to review every stock-in, stock-out, and manual adjustment in date order."
+        id="inventory-detail-tabs"
+        title="Inventory Views"
+        description="Open one focused view at a time so the long inventory sections stay manageable."
       >
-        <div className="mb-4 grid gap-4 md:grid-cols-4">
-          <ReadOnlyHint label="Total Entries" value={historySummary.total_entries} />
-          <ReadOnlyHint label="Stock In" value={historySummary.stock_in_count} />
-          <ReadOnlyHint label="Stock Out" value={historySummary.stock_out_count} />
-          <ReadOnlyHint label="Adjustments" value={historySummary.adjustment_count} />
+        <div className="mb-5 flex flex-wrap gap-2">
+          {INVENTORY_DETAIL_TABS.map((tab) => (
+            <SubTabButton
+              key={tab.id}
+              active={inventoryDetailTab === tab.id}
+              onClick={() => setInventoryDetailTab(tab.id)}
+            >
+              {tab.label}
+            </SubTabButton>
+          ))}
         </div>
 
-        {historyEntries.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1080px] text-left text-sm">
-              <thead>
-                <tr className="border-b border-gray-800 text-gray-400">
-                  <th className="pb-3">When</th>
-                  <th className="pb-3">Type</th>
-                  <th className="pb-3">Item</th>
-                  <th className="pb-3">Qty Change</th>
-                  <th className="pb-3">Unit Cost</th>
-                  <th className="pb-3">Value Change</th>
-                  <th className="pb-3">Reference</th>
-                  <th className="pb-3">Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {historyEntries.map((entry) => (
-                  <tr key={entry.id} className="border-b border-gray-900 text-gray-200">
-                    <td className="py-3 text-gray-400">{formatDateTime(entry.occurred_at)}</td>
-                    <td className="py-3">
-                      <ToneBadge
-                        tone={
-                          entry.entry_type === "STOCK_IN"
-                            ? "success"
-                            : entry.entry_type === "STOCK_OUT"
-                              ? "danger"
-                              : "warning"
-                        }
+        {inventoryDetailTab === "snapshot" && (
+          <DetailView
+            title="Current Inventory Snapshot"
+            description="Search the live inventory anytime and jump straight into add-stock or stock-out actions."
+          >
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <Field
+                label="Search"
+                value={inventorySearch}
+                onChange={setInventorySearch}
+                placeholder="Search item name"
+              />
+              <div className="rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3 text-sm text-gray-300">
+                Total value: <span className="font-semibold text-white">Rs {formatMoney(totalInventoryValue)}</span>
+              </div>
+            </div>
+
+            {filteredInventory.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1040px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-gray-400">
+                      <th className="pb-3">Item</th>
+                      <th className="pb-3">Unit</th>
+                      <th className="pb-3">In Stock</th>
+                      <th className="pb-3">Alert At</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3">Avg Cost</th>
+                      <th className="pb-3">Total Value</th>
+                      <th className="pb-3">Updated</th>
+                      <th className="pb-3 text-right">Quick Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredInventory.map((item) => (
+                      <tr
+                        key={item.id}
+                        className={`border-b border-gray-900 text-gray-200 ${
+                          item.is_low_stock ? "bg-amber-500/5" : ""
+                        }`}
                       >
-                        {entry.entry_type_display}
-                      </ToneBadge>
-                    </td>
-                    <td className="py-3">
-                      <div className="font-medium text-white">{entry.product_name}</div>
-                      <div className="text-xs text-gray-500">{entry.unit}</div>
-                    </td>
-                    <td
-                      className={`py-3 font-medium ${
-                        Number(entry.quantity_change) >= 0 ? "text-emerald-300" : "text-rose-300"
-                      }`}
-                    >
-                      {Number(entry.quantity_change) > 0 ? "+" : ""}
-                      {entry.quantity_change} {entry.unit}
-                    </td>
-                    <td className="py-3">
-                      {entry.unit_cost !== null && entry.unit_cost !== undefined
-                        ? `Rs ${formatMoney(entry.unit_cost)}`
-                        : "-"}
-                    </td>
-                    <td
-                      className={`py-3 font-medium ${
-                        Number(entry.value_change || 0) >= 0 ? "text-emerald-300" : "text-rose-300"
-                      }`}
-                    >
-                      {entry.value_change !== null && entry.value_change !== undefined ? (
-                        <>
-                          {Number(entry.value_change) > 0 ? "+" : ""}
-                          Rs {formatMoney(entry.value_change)}
-                        </>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                    <td className="py-3 text-gray-300">{entry.reference}</td>
-                    <td className="py-3 text-gray-400">{entry.notes || "-"}</td>
-                  </tr>
+                        <td className="py-3">{item.product_name}</td>
+                        <td className="py-3">{item.unit}</td>
+                        <td className="py-3">{item.quantity}</td>
+                        <td className="py-3">{item.low_stock_threshold}</td>
+                        <td className="py-3">
+                          {item.is_low_stock ? (
+                            <ToneBadge tone="warning">Low Stock</ToneBadge>
+                          ) : (
+                            <ToneBadge tone="neutral">Healthy</ToneBadge>
+                          )}
+                        </td>
+                        <td className="py-3">Rs {formatMoney(item.average_unit_cost)}</td>
+                        <td className="py-3">Rs {formatMoney(item.total_value)}</td>
+                        <td className="py-3 text-gray-400">{formatDateTime(item.updated_at)}</td>
+                        <td className="py-3">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <SmallButton onClick={() => openQuickAddStockModal(item)}>
+                              Add Stock
+                            </SmallButton>
+                            <SmallButton
+                              onClick={() => focusAdjustmentForm(item.product)}
+                              tone="secondary"
+                            >
+                              Adjust
+                            </SmallButton>
+                            <SmallButton
+                              onClick={() => focusAlertEditor(item.product)}
+                              tone="secondary"
+                            >
+                              Set Alert
+                            </SmallButton>
+                            <SmallButton
+                              onClick={() => openQuickStockOutModal(item)}
+                              tone="danger"
+                            >
+                              Stock Out
+                            </SmallButton>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState text="No inventory items match this search." />
+            )}
+          </DetailView>
+        )}
+
+        {inventoryDetailTab === "alerts" && (
+          <DetailView
+            id="inventory-alerts"
+            title="Low Stock Alerts"
+            description="Warnings appear when current stock is less than or equal to the alert quantity set for that item."
+          >
+            <InfoNote>
+              Example: if you set rice alert to `5 kg`, it will show here as soon as live stock reaches
+              `5 kg` or below.
+            </InfoNote>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr,1.1fr]">
+              <Field
+                label="Filter By Current Quantity"
+                value={lowStockQuantityFilter}
+                onChange={setLowStockQuantityFilter}
+                type="number"
+                placeholder="Leave blank for all, enter 0 for out-of-stock only"
+              />
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                <p className="text-sm text-gray-400">Export Filtered Alert List</p>
+                <p className="mt-2 text-sm text-gray-300">
+                  Save the currently visible low-stock list as a branded PDF document for purchasing or record keeping.
+                </p>
+                <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                  <ActionButton onClick={handleExportLowStockPdf} tone="secondary">
+                    Export Low Stock PDF
+                  </ActionButton>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-[1.15fr,0.9fr]">
+              <div>
+                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                  Active Warnings
+                </h4>
+                <p className="mt-2 text-sm text-gray-500">
+                  Showing {filteredLowStockItems.length} of {lowStockItems.length} alert item(s)
+                </p>
+                <div className="mt-3 space-y-3">
+                  {filteredLowStockItems.length ? (
+                    filteredLowStockItems.map((item) => (
+                      <div
+                        key={item.product_id}
+                        className={`rounded-2xl border p-4 ${
+                          Number(item.quantity) === 0
+                            ? "border-rose-500/30 bg-rose-500/10"
+                            : "border-amber-500/20 bg-amber-500/10"
+                        }`}
+                      >
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <p className="font-medium text-white">{item.product_name}</p>
+                            <p
+                              className={`text-sm ${
+                                Number(item.quantity) === 0
+                                  ? "font-semibold text-rose-200"
+                                  : "text-amber-100/80"
+                              }`}
+                            >
+                              Current stock: {item.quantity} {item.unit}
+                            </p>
+                            <p
+                              className={`mt-1 text-xs ${
+                                Number(item.quantity) === 0
+                                  ? "text-rose-100/80"
+                                  : "text-amber-100/70"
+                              }`}
+                            >
+                              Alert at {item.low_stock_threshold} {item.unit}
+                            </p>
+                            <div className="mt-2">
+                              <ToneBadge tone={Number(item.quantity) === 0 ? "danger" : "warning"}>
+                                {Number(item.quantity) === 0 ? "Out of Stock" : "Low Stock"}
+                              </ToneBadge>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <SmallButton
+                              onClick={() => focusAlertEditor(item.product_id)}
+                              tone="secondary"
+                            >
+                              Edit Alert
+                            </SmallButton>
+                            <SmallButton
+                              onClick={() => focusAdjustmentForm(item.product_id)}
+                            >
+                              Adjust Stock
+                            </SmallButton>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyState text="No low-stock warnings match this quantity filter." />
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                  Alert Settings
+                </h4>
+                <div className="mt-4 grid gap-4">
+                  <SelectField
+                    label="Item"
+                    value={alertForm.product_id}
+                    onChange={handleAlertProductChange}
+                    options={products.map((product) => ({
+                      value: String(product.id),
+                      label: `${product.name} (${product.unit})`,
+                    }))}
+                    placeholder="Choose item"
+                  />
+                  <Field
+                    label="Warn At Quantity"
+                    value={alertForm.low_stock_threshold}
+                    onChange={(value) =>
+                      setAlertForm((current) => ({
+                        ...current,
+                        low_stock_threshold: value,
+                      }))
+                    }
+                    type="number"
+                    placeholder="0.00"
+                  />
+                  <ActionButton
+                    onClick={handleSaveAlertThreshold}
+                    busy={busyAction === "save-alert-threshold"}
+                  >
+                    Save Alert Level
+                  </ActionButton>
+                </div>
+              </div>
+            </div>
+          </DetailView>
+        )}
+
+        {inventoryDetailTab === "adjustments" && (
+          <DetailView
+            id="inventory-adjustments"
+            title="Manual Stock Adjustment"
+            description="Use this only for correction cases like count mismatch, damaged stock not logged earlier, or opening balance fixes."
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <SelectField
+                label="Item"
+                value={adjustmentForm.product_id}
+                onChange={(value) =>
+                  setAdjustmentForm((current) => ({ ...current, product_id: value }))
+                }
+                options={products.map((product) => ({
+                  value: String(product.id),
+                  label: `${product.name} (${product.unit})`,
+                }))}
+                placeholder="Choose item"
+              />
+              <Field
+                label="Quantity Change"
+                value={adjustmentForm.quantity_change}
+                onChange={(value) =>
+                  setAdjustmentForm((current) => ({ ...current, quantity_change: value }))
+                }
+                type="number"
+                placeholder="+2.00 or -1.00"
+              />
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <Field
+                label="Unit Cost (Optional)"
+                value={adjustmentForm.unit_cost}
+                onChange={(value) =>
+                  setAdjustmentForm((current) => ({ ...current, unit_cost: value }))
+                }
+                type="number"
+                placeholder="Needed when adding stock without existing cost"
+              />
+              <Field
+                label="Reason"
+                value={adjustmentForm.reason}
+                onChange={(value) =>
+                  setAdjustmentForm((current) => ({ ...current, reason: value }))
+                }
+                placeholder="Example: Physical count correction"
+              />
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <ReadOnlyHint
+                label="Current Stock"
+                value={
+                  selectedAdjustmentInventory
+                    ? `${selectedAdjustmentInventory.quantity} ${selectedAdjustmentInventory.unit}`
+                    : "0.00"
+                }
+              />
+              <ReadOnlyHint
+                label="Current Avg Cost"
+                value={
+                  selectedAdjustmentInventory
+                    ? `Rs ${formatMoney(selectedAdjustmentInventory.average_unit_cost)}`
+                    : "Rs 0.00"
+                }
+              />
+            </div>
+
+            <InfoNote>
+              Use a positive number to add missing stock found during counting, and a negative number to
+              remove excess stock from the record.
+            </InfoNote>
+
+            <div className="mt-4">
+              <ActionButton
+                onClick={handleManualAdjustment}
+                busy={busyAction === "manual-adjustment"}
+              >
+                Apply Manual Adjustment
+              </ActionButton>
+            </div>
+          </DetailView>
+        )}
+
+        {inventoryDetailTab === "stock-out-log" && (
+          <DetailView
+            title="Recent Stock Out Log"
+            description="See the latest outgoing stock movements in one place."
+          >
+            {stockOutLogs.length ? (
+              <div className="space-y-3">
+                {stockOutLogs.slice(0, 8).map((log) => (
+                  <div
+                    key={log.id}
+                    className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="font-medium text-white">{log.product.name}</p>
+                        <p className="text-sm text-gray-400">{log.reason}</p>
+                      </div>
+                      <span className="rounded-full bg-rose-500/15 px-2 py-1 text-xs text-rose-300">
+                        -{log.quantity} {log.product.unit}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-xs text-gray-500">{formatDateTime(log.used_at)}</p>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <EmptyState text="No inventory movement history yet." />
+              </div>
+            ) : (
+              <EmptyState text="No stock out logs yet." />
+            )}
+          </DetailView>
+        )}
+
+        {inventoryDetailTab === "history" && (
+          <DetailView
+            title="Inventory History"
+            description="One place to review every stock-in, stock-out, and manual adjustment in date order."
+          >
+            <div className="mb-4 grid gap-4 md:grid-cols-4">
+              <ReadOnlyHint label="Total Entries" value={historySummary.total_entries} />
+              <ReadOnlyHint label="Stock In" value={historySummary.stock_in_count} />
+              <ReadOnlyHint label="Stock Out" value={historySummary.stock_out_count} />
+              <ReadOnlyHint label="Adjustments" value={historySummary.adjustment_count} />
+            </div>
+
+            {historyEntries.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1080px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-gray-400">
+                      <th className="pb-3">When</th>
+                      <th className="pb-3">Type</th>
+                      <th className="pb-3">Item</th>
+                      <th className="pb-3">Qty Change</th>
+                      <th className="pb-3">Unit Cost</th>
+                      <th className="pb-3">Value Change</th>
+                      <th className="pb-3">Reference</th>
+                      <th className="pb-3">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyEntries.map((entry) => (
+                      <tr key={entry.id} className="border-b border-gray-900 text-gray-200">
+                        <td className="py-3 text-gray-400">{formatDateTime(entry.occurred_at)}</td>
+                        <td className="py-3">
+                          <ToneBadge
+                            tone={
+                              entry.entry_type === "STOCK_IN"
+                                ? "success"
+                                : entry.entry_type === "STOCK_OUT"
+                                  ? "danger"
+                                  : "warning"
+                            }
+                          >
+                            {entry.entry_type_display}
+                          </ToneBadge>
+                        </td>
+                        <td className="py-3">
+                          <div className="font-medium text-white">{entry.product_name}</div>
+                          <div className="text-xs text-gray-500">{entry.unit}</div>
+                        </td>
+                        <td
+                          className={`py-3 font-medium ${
+                            Number(entry.quantity_change) >= 0 ? "text-emerald-300" : "text-rose-300"
+                          }`}
+                        >
+                          {Number(entry.quantity_change) > 0 ? "+" : ""}
+                          {entry.quantity_change} {entry.unit}
+                        </td>
+                        <td className="py-3">
+                          {entry.unit_cost !== null && entry.unit_cost !== undefined
+                            ? `Rs ${formatMoney(entry.unit_cost)}`
+                            : "-"}
+                        </td>
+                        <td
+                          className={`py-3 font-medium ${
+                            Number(entry.value_change || 0) >= 0 ? "text-emerald-300" : "text-rose-300"
+                          }`}
+                        >
+                          {entry.value_change !== null && entry.value_change !== undefined ? (
+                            <>
+                              {Number(entry.value_change) > 0 ? "+" : ""}
+                              Rs {formatMoney(entry.value_change)}
+                            </>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                        <td className="py-3 text-gray-300">{entry.reference}</td>
+                        <td className="py-3 text-gray-400">{entry.notes || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState text="No inventory movement history yet." />
+            )}
+          </DetailView>
         )}
       </Section>
 
@@ -1704,15 +2045,25 @@ export default function InventoryTab() {
               placeholder="0.00"
             />
             <Field
-              label="Unit Price"
+              label="Unit Price (Optional)"
               value={quickAddStockForm.unit_price}
               onChange={(value) =>
                 setQuickAddStockForm((current) => ({ ...current, unit_price: value }))
               }
               type="number"
-              placeholder="0.00"
+              placeholder={
+                getLastKnownUnitPrice(quickAddStockForm.product_id)
+                  ? "Leave blank to reuse last price"
+                  : "Required if no last price exists"
+              }
             />
           </div>
+
+          <InfoNote>
+            {getLastKnownUnitPrice(quickAddStockForm.product_id)
+              ? `Last unit price found: Rs ${formatMoney(getLastKnownUnitPrice(quickAddStockForm.product_id))}.`
+              : "If you leave unit price blank here, the system will look for the last price used for this same item."}
+          </InfoNote>
 
           <div className="mt-5 flex flex-col gap-3 md:flex-row">
             <ActionButton
@@ -1811,6 +2162,37 @@ function MiniPanel({ title, children }) {
       </h4>
       {children}
     </div>
+  );
+}
+
+function DetailView({ id, title, description, children }) {
+  return (
+    <div
+      id={id}
+      className="rounded-2xl border border-gray-800 bg-gray-950/40 p-5"
+    >
+      <div className="mb-4">
+        <h4 className="text-lg font-semibold text-white">{title}</h4>
+        {description && <p className="mt-1 text-sm text-gray-400">{description}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SubTabButton({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+        active
+          ? "bg-blue-600 text-white shadow-[0_10px_30px_rgba(37,99,235,0.25)]"
+          : "bg-gray-900 text-gray-300 hover:bg-gray-800 hover:text-white"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

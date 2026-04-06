@@ -1,7 +1,9 @@
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from .models import Inventory, Product, PurchaseBill, PurchaseItem, StockAdjustmentLog, StockOutLog
@@ -11,6 +13,13 @@ from .services import recalculate_purchase_bill_total
 class InventoryAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        user = User.objects.create_superuser(
+            username="inventory-admin",
+            password="testpass123",
+            email="inventory-admin@example.com",
+        )
+        token = Token.objects.create(user=user)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Token {token.key}"
         self.product = Product.objects.create(name="Rice", unit="kg")
         self.other_product = Product.objects.create(name="Oil", unit="ltr")
 
@@ -104,6 +113,53 @@ class InventoryAPITests(TestCase):
         self.assertIn("product_id", response.data)
         self.assertEqual(PurchaseItem.objects.count(), 0)
 
+    def test_missing_unit_price_uses_last_price_for_same_item(self):
+        old_bill = self.create_draft_bill()
+        self.add_bill_item(old_bill, quantity="1.00", unit_price="85.00")
+
+        new_bill = self.create_draft_bill()
+
+        response = self.client.post(
+            "/api/purchase-items/",
+            {
+                "bill_id": new_bill.id,
+                "product_id": self.product.id,
+                "quantity": "2.00",
+                "unit_price": None,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        item = PurchaseItem.objects.get(bill=new_bill, product=self.product)
+        new_bill.refresh_from_db()
+
+        self.assertEqual(item.unit_price, Decimal("85.00"))
+        self.assertEqual(item.line_total, Decimal("170.00"))
+        self.assertEqual(new_bill.total_amount, Decimal("170.00"))
+
+    def test_missing_unit_price_without_history_returns_clear_error(self):
+        bill = self.create_draft_bill()
+
+        response = self.client.post(
+            "/api/purchase-items/",
+            {
+                "bill_id": bill.id,
+                "product_id": self.product.id,
+                "quantity": "2.00",
+                "unit_price": None,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "Enter unit_price because last price for the same item wasn't found.",
+        )
+        self.assertEqual(PurchaseItem.objects.count(), 0)
+
     def test_draft_bill_can_be_fetched_updated_and_resumed_with_items(self):
         bill = self.create_draft_bill()
         item = self.add_bill_item(bill, quantity="4.00", unit_price="25.00")
@@ -193,6 +249,25 @@ class InventoryAPITests(TestCase):
         self.assertEqual(inventory.total_value, Decimal("200.00"))
         self.assertEqual(adjustment.adjustment_type, "DECREASE")
         self.assertEqual(adjustment.quantity_change, Decimal("-1.00"))
+
+    def test_product_details_can_be_renamed_and_updated(self):
+        response = self.client.patch(
+            f"/api/products/{self.product.id}/",
+            {
+                "name": "Premium Rice",
+                "unit": "bag",
+                "low_stock_threshold": "5.00",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.product.refresh_from_db()
+
+        self.assertEqual(self.product.name, "Premium Rice")
+        self.assertEqual(self.product.unit, "bag")
+        self.assertEqual(self.product.low_stock_threshold, Decimal("5.00"))
 
     def test_positive_adjustment_without_cost_requires_unit_cost_for_new_stock(self):
         response = self.client.post(
