@@ -219,6 +219,83 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
 
 class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
 
+    def test_ready_order_can_be_updated(self):
+
+        order = Order.objects.create(
+            order_type="DINE_IN",
+            order_status="READY",
+            payment_status="UNPAID",
+            table_number="T1",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Tea",
+            quantity=1,
+            price=Decimal("20.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "DINE_IN",
+                "table_number": "T2",
+                "discount": "5.00",
+                "delivery_charge": "0.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "20.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+
+        self.assertEqual(order.order_status, "READY")
+        self.assertEqual(order.table_number, "T2")
+        self.assertEqual(order.total_amount, Decimal("35.00"))
+
+    def test_completed_order_cannot_be_updated(self):
+
+        order = Order.objects.create(
+            order_type="DINE_IN",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            table_number="T1",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Tea",
+            quantity=1,
+            price=Decimal("20.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "DINE_IN",
+                "table_number": "T2",
+                "discount": "0.00",
+                "delivery_charge": "0.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "20.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"],
+            "Only processing or ready orders can be updated"
+        )
+
+        order.refresh_from_db()
+
+        self.assertEqual(order.table_number, "T1")
+        self.assertEqual(order.items.count(), 1)
+
     def test_update_order_recalculates_payment_status_and_customer_balance(self):
 
         order = Order.objects.create(

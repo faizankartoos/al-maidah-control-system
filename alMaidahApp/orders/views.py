@@ -738,6 +738,12 @@ class UpdateOrderAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
+        if order.order_status not in {"PROCESSING", "READY"}:
+            return Response(
+                {"error": "Only processing or ready orders can be updated"},
+                status=400
+            )
+
         data = request.data
 
         errors, validated_data = self._validate_payload(data)

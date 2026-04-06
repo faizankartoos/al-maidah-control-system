@@ -1128,7 +1128,7 @@ async function submitCollectPayment(){
           </button>
           )}
 
-          {order.order_status === "PROCESSING" && (
+          {["PROCESSING", "READY"].includes(order.order_status) && (
           <button
           onClick={()=>updateOrder(order.id)}
           className="bg-yellow-600 px-3 py-1 rounded"
