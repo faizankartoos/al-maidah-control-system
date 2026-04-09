@@ -3,6 +3,8 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
+from django.db import transaction
+from django.db.models import Sum
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,6 +14,60 @@ from .reports import account_ledger_report, daily_sales_report
 from .serializers import AccountSerializer, AccountWriteSerializer
 from .services import record_credit, record_debit
 from .utils import get_cash_drawer
+from orders.models import Order, OrderPayment
+
+
+def _sync_customer_collection_to_orders(account, amount, payment_type):
+    remaining_to_allocate = Decimal(str(amount))
+    updated_orders = []
+
+    linked_orders = (
+        Order.objects.filter(
+            customer_account=account,
+            order_status="COMPLETED",
+        )
+        .exclude(payment_status="PAID")
+        .order_by("completed_at", "created_at", "id")
+    )
+
+    for order in linked_orders:
+        if remaining_to_allocate <= 0:
+            break
+
+        total_paid = order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        order_remaining = Decimal(str(order.total_amount)) - Decimal(str(total_paid))
+
+        if order_remaining <= 0:
+            if order.payment_status != "PAID":
+                order.payment_status = "PAID"
+                order.save(update_fields=["payment_status"])
+            continue
+
+        applied_amount = min(order_remaining, remaining_to_allocate)
+
+        OrderPayment.objects.create(
+            order=order,
+            amount=applied_amount,
+            payment_type=payment_type,
+            cash_amount=applied_amount if payment_type == "CASH" else Decimal("0.00"),
+            online_amount=applied_amount if payment_type == "ONLINE" else Decimal("0.00"),
+        )
+
+        remaining_after = order_remaining - applied_amount
+        order.payment_status = "PAID" if remaining_after <= 0 else "UNPAID"
+        order.save(update_fields=["payment_status"])
+
+        updated_orders.append(
+            {
+                "id": order.id,
+                "applied_amount": applied_amount,
+                "payment_status": order.payment_status,
+            }
+        )
+
+        remaining_to_allocate -= applied_amount
+
+    return updated_orders
 
 
 class AccountListCreateAPIView(APIView):
@@ -154,6 +210,7 @@ class LedgerEntriesAPIView(APIView):
 
 class CollectFromAccountAPIView(APIView):
 
+    @transaction.atomic
     def post(self, request):
         account_id = request.data.get("account_id")
         amount = request.data.get("amount")
@@ -216,11 +273,18 @@ class CollectFromAccountAPIView(APIView):
             description=f"Collected from {account.name}",
         )
 
+        updated_orders = _sync_customer_collection_to_orders(
+            account=account,
+            amount=amount,
+            payment_type=payment_type,
+        )
+
         return Response(
             {
                 "success": True,
                 "account": account.name,
                 "amount": amount,
                 "payment_type": payment_type,
+                "updated_orders": updated_orders,
             }
         )

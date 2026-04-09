@@ -5,6 +5,7 @@ from .views import (
     CogsReportAPIView,
     ExpensesReportAPIView,
     ProfitReportAPIView,
+    InventoryConsumptionReportAPIView,
 )
 
 urlpatterns = [
@@ -13,4 +14,5 @@ urlpatterns = [
     path("cogs/", CogsReportAPIView.as_view()),
     path("expenses/", ExpensesReportAPIView.as_view()),
     path("profit/", ProfitReportAPIView.as_view()),
+    path("inventory-consumption/", InventoryConsumptionReportAPIView.as_view()),
 ]

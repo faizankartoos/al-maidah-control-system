@@ -1,14 +1,29 @@
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
 
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import record_credit, record_debit
 from ledger.utils import get_cash_drawer
-from orders.models import Order
+from orders.models import Order, OrderPayment
 
 
-class CollectFromAccountTests(TestCase):
+class AuthenticatedLedgerTestCase(TestCase):
+
+    def setUp(self):
+        super().setUp()
+        user = User.objects.create_superuser(
+            username="ledger-admin",
+            password="testpass123",
+            email="ledger-admin@example.com",
+        )
+        token = Token.objects.create(user=user)
+        self.client.defaults["HTTP_AUTHORIZATION"] = f"Token {token.key}"
+
+
+class CollectFromAccountTests(AuthenticatedLedgerTestCase):
 
     def test_collect_from_customer_reduces_customer_balance_and_increases_cash(self):
         customer = LedgerAccount.objects.create(
@@ -140,8 +155,57 @@ class CollectFromAccountTests(TestCase):
             ).exists()
         )
 
+    def test_collect_updates_linked_completed_order_payment_status(self):
+        customer = LedgerAccount.objects.create(
+            name="Ledger Customer",
+            account_type="CUSTOMER",
+            contact_number="9999999996",
+        )
 
-class LedgerAccountApiTests(TestCase):
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Ledger Customer",
+            customer_phone="9999999996",
+            customer_account=customer,
+            total_amount=Decimal("100.00"),
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("100.00"),
+            reference=f"ORDER-{order.id}",
+            description="Customer owes for order",
+        )
+
+        response = self.client.post(
+            "/api/ledger/collect/",
+            {
+                "account_id": customer.id,
+                "amount": "100.00",
+                "payment_type": "CASH",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        customer.refresh_from_db()
+        cash = get_cash_drawer()
+        cash.refresh_from_db()
+
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertEqual(customer.balance, Decimal("0.00"))
+        self.assertEqual(cash.balance, Decimal("100.00"))
+        self.assertEqual(order.payments.count(), 1)
+
+        payment = OrderPayment.objects.get(order=order)
+        self.assertEqual(payment.amount, Decimal("100.00"))
+        self.assertEqual(payment.payment_type, "CASH")
+
+
+class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
 
     def test_can_create_non_cash_account_from_api(self):
         response = self.client.post(
@@ -218,7 +282,7 @@ class LedgerAccountApiTests(TestCase):
         self.assertEqual(Decimal(str(data["transactions"][-1]["running_balance"])), Decimal("70.00"))
 
 
-class LedgerDailyReportTests(TestCase):
+class LedgerDailyReportTests(AuthenticatedLedgerTestCase):
 
     def test_daily_report_separates_order_collections_from_manual_collections(self):
         cash = get_cash_drawer()

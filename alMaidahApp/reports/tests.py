@@ -8,7 +8,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from expenses.models import Expense, ExpenseCategory
-from inventory.models import Inventory, Product, StockOutLog
+from inventory.models import Inventory, Product, StockOutLog, PurchaseBill, PurchaseItem
 from ledger.models import LedgerAccount, LedgerEntry
 from orders.models import Order, OrderItem, OrderPayment
 
@@ -70,18 +70,33 @@ class ReportsDashboardTests(TestCase):
         )
 
     def _create_inventory_data(self):
-        product = Product.objects.create(
+        self.product = Product.objects.create(
             name="Chicken Fillet",
             unit="kg",
             low_stock_threshold=Decimal("5.00"),
         )
         Inventory.objects.create(
-            product=product,
+            product=self.product,
             quantity=Decimal("2.00"),
             total_value=Decimal("100.00"),
         )
+
+        purchase_bill = PurchaseBill.objects.create(
+            supplier_name="Metro Supplier",
+            bill_number="B-501",
+            bill_date=self.today,
+            status="CONFIRMED",
+            confirmed_at=self.now - timedelta(hours=2),
+        )
+        PurchaseItem.objects.create(
+            bill=purchase_bill,
+            product=self.product,
+            quantity=Decimal("3.00"),
+            unit_price=Decimal("30.00"),
+        )
+
         StockOutLog.objects.create(
-            product=product,
+            product=self.product,
             quantity=Decimal("1.00"),
             reason="Kitchen Use",
             unit_cost=Decimal("50.00"),
@@ -223,3 +238,81 @@ class ReportsDashboardTests(TestCase):
         self.assertEqual(payload["details"]["low_stock_items"][0]["product_name"], "Chicken Fillet")
         self.assertEqual(payload["details"]["recent_expenses"][0]["category_name"], "Utilities")
         self.assertEqual(payload["details"]["top_selling_items"][0]["item_name"], "Zinger Burger")
+
+    def test_inventory_consumption_report_returns_usage_metrics_and_timeline(self):
+        earlier_day = self.today - timedelta(days=2)
+        stock_out_time = timezone.now() - timedelta(days=1, hours=1)
+
+        older_bill = PurchaseBill.objects.create(
+            supplier_name="City Supplier",
+            bill_number="B-502",
+            bill_date=earlier_day,
+            status="CONFIRMED",
+            confirmed_at=timezone.now() - timedelta(days=2, hours=3),
+        )
+        PurchaseItem.objects.create(
+            bill=older_bill,
+            product=self.product,
+            quantity=Decimal("4.00"),
+            unit_price=Decimal("20.00"),
+        )
+
+        older_stock_out = StockOutLog.objects.create(
+            product=self.product,
+            quantity=Decimal("2.00"),
+            reason="Prep Batch",
+            unit_cost=Decimal("25.00"),
+            value_reduced=Decimal("50.00"),
+        )
+        StockOutLog.objects.filter(id=older_stock_out.id).update(used_at=stock_out_time)
+
+        response = self.client.get(
+            "/api/reports/inventory-consumption/",
+            {
+                "from_date": earlier_day.isoformat(),
+                "to_date": self.today.isoformat(),
+                "product_id": self.product.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["product"]["name"], "Chicken Fillet")
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_in_qty"]), Decimal("7.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_in_value"]), Decimal("170.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_out_qty"]), Decimal("3.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_out_value"]), Decimal("90.00"))
+        self.assertEqual(self._decimal(payload["summary"]["average_daily_usage"]), Decimal("1.00"))
+        self.assertEqual(self._decimal(payload["summary"]["days_per_unit_used"]), Decimal("1.00"))
+        self.assertEqual(self._decimal(payload["summary"]["current_stock_cover_days"]), Decimal("2.00"))
+        self.assertEqual(payload["summary"]["timeline_events_count"], 4)
+
+        self.assertEqual(len(payload["charts"]["daily_movements"]), 3)
+        self.assertEqual(payload["details"]["timeline"][0]["event_type"], "STOCK_OUT")
+        self.assertTrue(
+            any(event["event_type"] == "STOCK_IN" for event in payload["details"]["timeline"])
+        )
+
+    def test_inventory_consumption_report_returns_timeline_and_usage_metrics(self):
+        response = self.client.get(
+            "/api/reports/inventory-consumption/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+                "product_id": self.product.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["product"]["name"], "Chicken Fillet")
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_in_qty"]), Decimal("3.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_stocked_out_qty"]), Decimal("1.00"))
+        self.assertEqual(self._decimal(payload["summary"]["average_daily_usage"]), Decimal("1.00"))
+        self.assertEqual(self._decimal(payload["summary"]["days_per_unit_used"]), Decimal("1.00"))
+        self.assertEqual(payload["summary"]["stock_in_events_count"], 1)
+        self.assertEqual(payload["summary"]["stock_out_events_count"], 1)
+        self.assertEqual(len(payload["details"]["timeline"]), 2)
+        self.assertEqual(payload["details"]["timeline"][0]["event_type"], "STOCK_OUT")

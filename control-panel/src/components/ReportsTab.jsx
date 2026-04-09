@@ -3,6 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
 
 const today = new Date().toISOString().split("T")[0];
+const PROFIT_UNLOCK_PASSWORD = "admin@almaidah";
+
+const reportViews = [
+  { key: "overview", label: "Overview" },
+  { key: "profit", label: "Profit Summary", locked: true },
+  { key: "consumption", label: "Inventory Consumption" },
+];
 
 const donutPalette = [
   "#22c55e",
@@ -23,6 +30,16 @@ const moneyFlowBars = [
 
 const reasonBars = [
   { key: "total_cogs", label: "Value", color: "bg-cyan-400" },
+];
+
+const consumptionQuantityBars = [
+  { key: "stocked_in_qty", label: "Stock In", color: "bg-emerald-400" },
+  { key: "stocked_out_qty", label: "Stock Out", color: "bg-rose-400" },
+];
+
+const consumptionValueBars = [
+  { key: "stocked_in_value", label: "Stock In Value", color: "bg-cyan-400" },
+  { key: "stocked_out_value", label: "Stock Out Value", color: "bg-amber-400" },
 ];
 
 function getMonthStart() {
@@ -57,6 +74,17 @@ function formatDate(value) {
   });
 }
 
+function formatDateCompact(value) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Date(value).toLocaleDateString("en-IN", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function formatDateTime(value) {
   if (!value) {
     return "-";
@@ -69,6 +97,14 @@ function formatDateTime(value) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatDays(value) {
+  if (value === null || value === undefined || value === "") {
+    return "Not enough usage yet";
+  }
+
+  return `${formatNumber(value)} day${Number(value) === 1 ? "" : "s"}`;
 }
 
 function getErrorMessage(error, fallback) {
@@ -140,6 +176,18 @@ function readValue(row, valueKey) {
   return Number(row?.[valueKey] || 0);
 }
 
+function pickDefaultMovementDate(data) {
+  const withMovement = (data || []).find(
+    (row) => Number(row?.stocked_in_qty || 0) > 0 || Number(row?.stocked_out_qty || 0) > 0,
+  );
+
+  if (withMovement) {
+    return withMovement.date;
+  }
+
+  return data?.[data.length - 1]?.date || "";
+}
+
 function SectionCard({ title, eyebrow, description, children, className = "" }) {
   return (
     <div className={`rounded-[30px] border border-slate-800 bg-slate-950/90 p-5 shadow-[0_25px_70px_rgba(15,23,42,0.28)] ${className}`}>
@@ -192,6 +240,7 @@ function StatusPill({ label, tone = "slate" }) {
     rose: "bg-rose-500/15 text-rose-200",
     cyan: "bg-cyan-500/15 text-cyan-200",
     slate: "bg-slate-800 text-slate-200",
+    violet: "bg-violet-500/15 text-violet-200",
   };
 
   return (
@@ -257,7 +306,13 @@ function DonutChart({ title, subtitle, data, valueKey, centerLabel, emptyLabel =
         <div className="grid gap-3">
           {safeData.map((item, index) => {
             const percent = (item.chartValue / total) * 100;
-            const label = item.label || item.category_name || item.payment_mode_display || item.order_type_display || item.order_status || item.reason;
+            const label =
+              item.label ||
+              item.category_name ||
+              item.payment_mode_display ||
+              item.order_type_display ||
+              item.order_status ||
+              item.reason;
 
             return (
               <div
@@ -295,8 +350,19 @@ function DonutChart({ title, subtitle, data, valueKey, centerLabel, emptyLabel =
   );
 }
 
-function GroupedBarChart({ title, subtitle, data, bars, xKey, labelFormatter, valueFormatter = formatCurrency }) {
-  const chartRows = (data || []).slice(0, 12);
+function GroupedBarChart({
+  title,
+  subtitle,
+  data,
+  bars,
+  xKey,
+  labelFormatter,
+  valueFormatter = formatCurrency,
+  maxItems = 12,
+  sliceFromEnd = false,
+}) {
+  const sourceRows = data || [];
+  const chartRows = sliceFromEnd ? sourceRows.slice(-maxItems) : sourceRows.slice(0, maxItems);
   const maxValue = Math.max(
     1,
     ...chartRows.flatMap((row) => bars.map((bar) => Number(row?.[bar.key] || 0))),
@@ -377,13 +443,290 @@ function InsightStrip({ insights }) {
   );
 }
 
+function ViewTabs({ activeView, profitUnlocked, onChange }) {
+  return (
+    <div className="flex flex-wrap gap-3">
+      {reportViews.map((view) => {
+        const isLocked = view.locked && !profitUnlocked;
+        const isActive = activeView === view.key;
+
+        return (
+          <button
+            key={view.key}
+            onClick={() => onChange(view.key)}
+            className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+              isActive
+                ? "border-emerald-500 bg-emerald-500 text-slate-950"
+                : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              {view.label}
+              {isLocked ? <span className="text-xs">Lock</span> : null}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProfitUnlockModal({
+  open,
+  password,
+  error,
+  onClose,
+  onChange,
+  onSubmit,
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[30px] border border-slate-800 bg-slate-950 p-6 shadow-[0_25px_80px_rgba(0,0,0,0.55)]">
+        <div className="text-[11px] uppercase tracking-[0.34em] text-amber-300">
+          Protected Profit View
+        </div>
+        <h3 className="mt-3 text-2xl font-semibold text-white">Unlock Profit Summary</h3>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Profit figures stay hidden until the correct password is entered for this browser session.
+        </p>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-4">
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => onChange(event.target.value)}
+              autoFocus
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+              placeholder="Enter profit password"
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300"
+            >
+              Unlock
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ConsumptionPulseChart({ data, selectedDate, onSelect, unit }) {
+  const rows = data || [];
+  const selectedRow = rows.find((row) => row.date === selectedDate) || rows[rows.length - 1];
+  const maxMovement = Math.max(
+    1,
+    ...rows.map((row) =>
+      Math.max(Number(row.stocked_in_qty || 0), Number(row.stocked_out_qty || 0)),
+    ),
+  );
+
+  if (!rows.length) {
+    return (
+      <SectionCard
+        title="Movement Pulse"
+        eyebrow="Interactive Timeline"
+        description="Choose a day to inspect the product movement rhythm inside the selected range."
+      >
+        <EmptyBlock text="Run a product analysis to explore movement pulse." />
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard
+      title="Movement Pulse"
+      eyebrow="Interactive Timeline"
+      description="Tap a date to inspect how much was stocked in, stocked out, and what the day looked like for this product."
+    >
+      <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm text-slate-400">Selected Day</div>
+            <div className="mt-2 text-xl font-semibold text-white">
+              {selectedRow ? formatDate(selectedRow.date) : "No day selected"}
+            </div>
+          </div>
+          {selectedRow ? (
+            <div className="flex flex-wrap gap-2">
+              <StatusPill
+                label={`In ${formatNumber(selectedRow.stocked_in_qty)} ${unit}`}
+                tone="emerald"
+              />
+              <StatusPill
+                label={`Out ${formatNumber(selectedRow.stocked_out_qty)} ${unit}`}
+                tone="rose"
+              />
+              <StatusPill
+                label={`Net ${formatNumber(selectedRow.net_qty_change)} ${unit}`}
+                tone={Number(selectedRow.net_qty_change || 0) >= 0 ? "cyan" : "amber"}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-5 overflow-x-auto pb-2">
+        <div className="flex min-w-max gap-3">
+          {rows.map((row) => {
+            const inHeight = `${Math.max((Number(row.stocked_in_qty || 0) / maxMovement) * 100, Number(row.stocked_in_qty || 0) > 0 ? 8 : 0)}%`;
+            const outHeight = `${Math.max((Number(row.stocked_out_qty || 0) / maxMovement) * 100, Number(row.stocked_out_qty || 0) > 0 ? 8 : 0)}%`;
+            const isSelected = row.date === selectedDate;
+
+            return (
+              <button
+                key={row.date}
+                onClick={() => onSelect(row.date)}
+                className={`flex w-[88px] shrink-0 flex-col rounded-[24px] border px-3 py-3 text-left transition ${
+                  isSelected
+                    ? "border-emerald-400 bg-emerald-500/10"
+                    : "border-slate-800 bg-slate-900/60 hover:border-slate-600"
+                }`}
+              >
+                <div className="flex h-32 items-end justify-center gap-2">
+                  <div className="flex h-full w-4 items-end">
+                    <div
+                      className="w-full rounded-t-full bg-emerald-400 shadow-[0_12px_24px_rgba(16,185,129,0.25)]"
+                      style={{ height: inHeight }}
+                      title={`Stock In: ${formatNumber(row.stocked_in_qty)} ${unit}`}
+                    />
+                  </div>
+                  <div className="flex h-full w-4 items-end">
+                    <div
+                      className="w-full rounded-t-full bg-rose-400 shadow-[0_12px_24px_rgba(244,63,94,0.22)]"
+                      style={{ height: outHeight }}
+                      title={`Stock Out: ${formatNumber(row.stocked_out_qty)} ${unit}`}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
+                  {formatDateCompact(row.date)}
+                </div>
+                <div className="mt-2 text-center text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                  {formatNumber(Number(row.stocked_in_qty || 0) + Number(row.stocked_out_qty || 0))} {unit}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+function ConsumptionTimeline({ timeline, unit }) {
+  if (!timeline?.length) {
+    return (
+      <SectionCard
+        title="Stock In / Stock Out Timeline"
+        eyebrow="Detailed Register"
+        description="This register becomes useful once the selected product has activity in the chosen date range."
+      >
+        <EmptyBlock text="No stock movement events were found for this product in the selected date range." />
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard
+      title="Stock In / Stock Out Timeline"
+      eyebrow="Detailed Register"
+      description="Every purchase confirmation and manual stock-out event for the selected product in the chosen period."
+    >
+      <div className="space-y-3">
+        {timeline.map((event) => (
+          <div
+            key={event.id}
+            className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill
+                    label={event.label}
+                    tone={event.event_type === "STOCK_IN" ? "emerald" : "rose"}
+                  />
+                  <StatusPill label={formatDateTime(event.occurred_at)} tone="slate" />
+                </div>
+                <div className="mt-3 text-lg font-semibold text-white">
+                  {formatNumber(event.quantity)} {unit}
+                </div>
+                <div className="mt-1 text-sm text-slate-400">
+                  {event.reference || "No reference"}
+                </div>
+              </div>
+
+              <div className="text-right">
+                <div className="text-base font-semibold text-white">
+                  {formatCurrency(event.value)}
+                </div>
+                <div className="mt-1 text-sm text-slate-400">
+                  {event.unit_price ? `${formatCurrency(event.unit_price)} per ${unit}` : "Cost not recorded"}
+                </div>
+              </div>
+            </div>
+
+            {event.notes ? (
+              <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-3 py-3 text-sm text-slate-300">
+                {event.notes}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
 export default function ReportsTab() {
   const [fromDate, setFromDate] = useState(getMonthStart());
   const [toDate, setToDate] = useState(today);
   const [activePreset, setActivePreset] = useState("month");
+  const [activeView, setActiveView] = useState("overview");
   const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [profitUnlocked, setProfitUnlocked] = useState(false);
+  const [showProfitUnlockModal, setShowProfitUnlockModal] = useState(false);
+  const [profitPassword, setProfitPassword] = useState("");
+  const [profitUnlockError, setProfitUnlockError] = useState("");
+  const [reportProducts, setReportProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [consumptionProductId, setConsumptionProductId] = useState("");
+  const [consumptionReport, setConsumptionReport] = useState(null);
+  const [consumptionLoading, setConsumptionLoading] = useState(false);
+  const [consumptionError, setConsumptionError] = useState("");
+  const [selectedMovementDate, setSelectedMovementDate] = useState("");
+
+  const clearConsumptionAnalysis = () => {
+    setConsumptionReport(null);
+    setConsumptionError("");
+    setSelectedMovementDate("");
+  };
 
   const loadReports = async (from = fromDate, to = toDate) => {
     try {
@@ -405,8 +748,57 @@ export default function ReportsTab() {
     }
   };
 
+  const loadProducts = async () => {
+    try {
+      setProductsLoading(true);
+      const response = await api.get("products/");
+      const products = response.data || [];
+
+      setReportProducts(products);
+      setConsumptionProductId((current) => current || (products[0] ? String(products[0].id) : ""));
+    } catch (err) {
+      setConsumptionError(getErrorMessage(err, "Unable to load products for consumption analysis."));
+    } finally {
+      setProductsLoading(false);
+    }
+  };
+
+  const loadConsumptionReport = async (
+    productId = consumptionProductId,
+    from = fromDate,
+    to = toDate,
+  ) => {
+    if (!productId) {
+      setConsumptionError("Select a product first to analyze its consumption.");
+      return;
+    }
+
+    try {
+      setConsumptionLoading(true);
+      setConsumptionError("");
+
+      const response = await api.get("reports/inventory-consumption/", {
+        params: {
+          from_date: from,
+          to_date: to,
+          product_id: productId,
+        },
+      });
+
+      setConsumptionReport(response.data);
+      setSelectedMovementDate(pickDefaultMovementDate(response.data?.charts?.daily_movements || []));
+    } catch (err) {
+      setConsumptionError(getErrorMessage(err, "Unable to analyze inventory consumption right now."));
+      setConsumptionReport(null);
+      setSelectedMovementDate("");
+    } finally {
+      setConsumptionLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadReports(getMonthStart(), today);
+    loadProducts();
   }, []);
 
   const applyPreset = (preset) => {
@@ -414,13 +806,48 @@ export default function ReportsTab() {
     setFromDate(range.from);
     setToDate(range.to);
     setActivePreset(preset);
+    clearConsumptionAnalysis();
     loadReports(range.from, range.to);
+  };
+
+  const handleProfitUnlock = (event) => {
+    event.preventDefault();
+
+    if (profitPassword !== PROFIT_UNLOCK_PASSWORD) {
+      setProfitUnlockError("Incorrect password. Profit summary stays locked.");
+      return;
+    }
+
+    setProfitUnlocked(true);
+    setActiveView("profit");
+    setShowProfitUnlockModal(false);
+    setProfitPassword("");
+    setProfitUnlockError("");
+  };
+
+  const handleViewChange = (viewKey) => {
+    if (viewKey === "profit" && !profitUnlocked) {
+      setShowProfitUnlockModal(true);
+      setProfitUnlockError("");
+      setProfitPassword("");
+      return;
+    }
+
+    setActiveView(viewKey);
   };
 
   const summary = dashboard?.summary || {};
   const snapshot = dashboard?.snapshot || {};
   const charts = dashboard?.charts || {};
   const details = dashboard?.details || {};
+  const profit = dashboard?.profit || {};
+  const profitSummary = profit.summary || {};
+  const profitBreakdown = profit.breakdown || {};
+
+  const consumptionSummary = consumptionReport?.summary || {};
+  const consumptionProduct = consumptionReport?.product || {};
+  const consumptionCharts = consumptionReport?.charts || {};
+  const consumptionDetails = consumptionReport?.details || {};
 
   const insights = useMemo(() => {
     if (!dashboard) {
@@ -468,116 +895,32 @@ export default function ReportsTab() {
     ].filter(Boolean);
   }, [charts, dashboard, details, snapshot]);
 
-  return (
-    <div className="space-y-6 text-white">
-      <div className="overflow-hidden rounded-[34px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.24),_transparent_26%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.18),_transparent_24%),linear-gradient(135deg,_#020617_0%,_#0f172a_48%,_#111827_100%)] p-6">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-          <div className="max-w-3xl">
-            <div className="text-[11px] uppercase tracking-[0.34em] text-emerald-300">
-              Business Command Center
-            </div>
-            <h2 className="mt-3 text-3xl font-semibold tracking-tight">
-              Reports that answer the real questions behind the restaurant
-            </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
-              Profit here is calculated from completed orders, manual stock-out cost, and manually logged expenses.
-              Since inventory and expenses stay independent from orders by design, this dashboard is built to bring those
-              numbers together cleanly without forcing the apps to merge operationally.
-            </p>
-          </div>
+  const profitMix = useMemo(() => {
+    const netProfit = Number(profitSummary.net_profit || 0);
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:min-w-[360px]">
-            <MetricCard
-              title="Net Profit"
-              value={formatCurrency(summary.net_profit)}
-              hint={`${formatNumber(summary.profit_margin)}% margin`}
-              tone={Number(summary.net_profit || 0) >= 0 ? "emerald" : "rose"}
-            />
-            <MetricCard
-              title="Inventory Value"
-              value={formatCurrency(snapshot.inventory_value)}
-              hint={`${formatNumber(snapshot.inventory_items_count)} stocked items`}
-              tone="cyan"
-            />
-          </div>
-        </div>
-      </div>
+    return [
+      {
+        label: "COGS",
+        total_amount: Number(profitSummary.cogs || 0),
+      },
+      {
+        label: "Expenses",
+        total_amount: Number(profitSummary.expenses || 0),
+      },
+      {
+        label: netProfit >= 0 ? "Net Profit" : "Net Loss",
+        total_amount: Math.abs(netProfit),
+      },
+    ].filter((row) => row.total_amount > 0);
+  }, [profitSummary]);
 
-      <SectionCard
-        title="Date Controls"
-        eyebrow="Range Builder"
-        description="Use quick presets for owner-style review or define a custom date window for audit, tax, or performance checks."
-      >
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div className="flex flex-wrap gap-3">
-            {[
-              { key: "today", label: "Today" },
-              { key: "week", label: "Last 7 Days" },
-              { key: "month", label: "This Month" },
-              { key: "30d", label: "Last 30 Days" },
-              { key: "90d", label: "Last 90 Days" },
-            ].map((preset) => (
-              <button
-                key={preset.key}
-                onClick={() => applyPreset(preset.key)}
-                className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                  activePreset === preset.key
-                    ? "bg-emerald-500 text-slate-950"
-                    : "border border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
-                }`}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
+  const selectedConsumptionProductLabel = useMemo(() => {
+    const product = reportProducts.find((item) => String(item.id) === String(consumptionProductId));
+    return product ? `${product.name} (${product.unit})` : "Select product";
+  }, [consumptionProductId, reportProducts]);
 
-          <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
-            <div>
-              <label className="mb-2 block text-sm text-slate-300">From Date</label>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(event) => {
-                  setFromDate(event.target.value);
-                  setActivePreset("custom");
-                }}
-                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
-              />
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm text-slate-300">To Date</label>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(event) => {
-                  setToDate(event.target.value);
-                  setActivePreset("custom");
-                }}
-                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
-              />
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm text-slate-300">Load Snapshot</label>
-              <button
-                onClick={() => loadReports()}
-                disabled={loading}
-                className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
-              >
-                {loading ? "Refreshing..." : "Generate Reports"}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {error ? (
-          <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {error}
-          </div>
-        ) : null}
-      </SectionCard>
-
+  const overviewContent = (
+    <>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard title="Gross Revenue" value={formatCurrency(summary.gross_revenue)} hint={`${formatNumber(summary.completed_orders)} completed orders`} tone="emerald" />
         <MetricCard title="COGS" value={formatCurrency(summary.total_cogs)} hint="Based on manual stock-out logs" tone="amber" />
@@ -986,6 +1329,490 @@ export default function ReportsTab() {
           )}
         </SectionCard>
       </div>
+    </>
+  );
+
+  const profitContent = (
+    <>
+      <SectionCard
+        title="Profit Reading"
+        eyebrow="Protected Summary"
+        description="This section stays hidden until the password is entered. It uses the same selected date range and combines completed sales, COGS, and expenses into a clean owner view."
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-emerald-500/20 bg-emerald-500/10 px-4 py-4">
+          <div>
+            <div className="text-sm text-emerald-200">Selected Range</div>
+            <div className="mt-2 text-xl font-semibold text-white">
+              {formatDate(fromDate)} to {formatDate(toDate)}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <StatusPill label={`${formatNumber(summary.completed_orders)} completed orders`} tone="emerald" />
+            <StatusPill label={`${formatNumber(summary.created_orders)} total created`} tone="cyan" />
+            <button
+              onClick={() => {
+                setProfitUnlocked(false);
+                setActiveView("overview");
+              }}
+              className="rounded-full border border-slate-700 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-300 transition hover:border-slate-500"
+            >
+              Lock Again
+            </button>
+          </div>
+        </div>
+      </SectionCard>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <MetricCard title="Revenue" value={formatCurrency(profitSummary.revenue)} hint="Completed-order sales only" tone="emerald" />
+        <MetricCard title="Gross Profit" value={formatCurrency(profitSummary.gross_profit)} hint="Revenue minus COGS" tone={Number(profitSummary.gross_profit || 0) >= 0 ? "emerald" : "rose"} />
+        <MetricCard title="Net Profit" value={formatCurrency(profitSummary.net_profit)} hint={`${formatNumber(profitSummary.profit_margin)}% margin`} tone={Number(profitSummary.net_profit || 0) >= 0 ? "emerald" : "rose"} />
+        <MetricCard title="COGS Ratio" value={`${formatNumber(profitSummary.cogs_ratio)}%`} hint="How much revenue turned into consumed stock cost" tone="amber" />
+        <MetricCard title="Expense Ratio" value={`${formatNumber(profitSummary.expense_ratio)}%`} hint="How much revenue turned into operating expense" tone="rose" />
+        <MetricCard title="Refund Pressure" value={formatCurrency(summary.refunds_issued)} hint={`${formatNumber(summary.cooked_cancelled_count)} cooked cancellations in range`} tone="violet" />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.15fr,1fr]">
+        <SectionCard
+          title="Profit Bridge"
+          eyebrow="Money Story"
+          description="A simple bridge from revenue to net profit for the currently selected date range."
+        >
+          <div className="space-y-4">
+            {[
+              {
+                label: "Revenue In",
+                value: Number(profitSummary.revenue || 0),
+                tone: "emerald",
+                hint: "Completed sales flowing into the business",
+              },
+              {
+                label: "Less COGS",
+                value: Number(profitSummary.cogs || 0),
+                tone: "amber",
+                hint: "Manual stock-out cost consumed in operations",
+              },
+              {
+                label: "Less Expenses",
+                value: Number(profitSummary.expenses || 0),
+                tone: "rose",
+                hint: "Logged business expenses in the same range",
+              },
+              {
+                label: "Net Profit",
+                value: Number(profitSummary.net_profit || 0),
+                tone: Number(profitSummary.net_profit || 0) >= 0 ? "emerald" : "rose",
+                hint: "Final profit after stock cost and expenses",
+              },
+            ].map((row) => (
+              <div key={row.label} className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">{row.label}</div>
+                    <div className="mt-2 text-2xl font-semibold text-white">{formatCurrency(row.value)}</div>
+                    <div className="mt-2 text-sm text-slate-400">{row.hint}</div>
+                  </div>
+                  <StatusPill label={row.tone === "rose" ? "Pressure" : "Healthy"} tone={row.tone === "amber" ? "amber" : row.tone === "rose" ? "rose" : "emerald"} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+
+        <DonutChart
+          title="Profit Composition"
+          subtitle="Shows how revenue was absorbed by cost, expense, and the profit or loss left after both."
+          data={profitMix}
+          valueKey="total_amount"
+          centerLabel={formatCurrency(profitSummary.revenue)}
+          emptyLabel="There is no revenue in the selected period yet."
+        />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-3">
+        <SectionCard
+          title="Sales Breakdown"
+          eyebrow="Source Input"
+          description="The sales engine feeding this profit view."
+        >
+          <div className="space-y-3">
+            <MetricCard title="Gross Revenue" value={formatCurrency(profitBreakdown.sales_summary?.gross_revenue)} hint={`${formatNumber(profitBreakdown.sales_summary?.total_orders)} completed orders`} tone="emerald" />
+            <MetricCard title="Average Order Value" value={formatCurrency(profitBreakdown.sales_summary?.average_order_value)} hint="Average completed-order ticket size" tone="cyan" />
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="COGS Breakdown"
+          eyebrow="Source Input"
+          description="This is coming from manual stock-out logs in Inventory."
+        >
+          <div className="space-y-3">
+            <MetricCard title="Total COGS" value={formatCurrency(profitBreakdown.cogs_summary?.total_cogs)} hint={`${formatNumber(profitBreakdown.cogs_summary?.total_stock_out_logs)} stock-out events`} tone="amber" />
+            <MetricCard title="Used Quantity" value={formatNumber(profitBreakdown.cogs_summary?.total_quantity)} hint="Total quantity moved out through manual stock-out logs" tone="cyan" />
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Expense Breakdown"
+          eyebrow="Source Input"
+          description="These numbers flow from the Expenses app without touching the cash drawer."
+        >
+          <div className="space-y-3">
+            <MetricCard title="Total Expenses" value={formatCurrency(profitBreakdown.expenses_summary?.total_expenses)} hint={`${formatNumber(profitBreakdown.expenses_summary?.expense_count)} expense records`} tone="rose" />
+            <MetricCard title="Categories Used" value={formatNumber(profitBreakdown.expenses_summary?.categories_used)} hint={`${formatCurrency(profitBreakdown.expenses_summary?.cash_expenses)} cash and ${formatCurrency(profitBreakdown.expenses_summary?.non_cash_expenses)} non-cash`} tone="violet" />
+          </div>
+        </SectionCard>
+      </div>
+    </>
+  );
+
+  const consumptionContent = (
+    <>
+      <SectionCard
+        title="Inventory Consumption Workspace"
+        eyebrow="Product Analysis"
+        description="Choose a product and the selected date range above will answer when it was stocked in, when it moved out, how fast it is being consumed, and how long current stock is likely to last."
+      >
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr),220px]">
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Product</label>
+            <select
+              value={consumptionProductId}
+              onChange={(event) => {
+                setConsumptionProductId(event.target.value);
+                clearConsumptionAnalysis();
+              }}
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+            >
+              <option value="">{productsLoading ? "Loading products..." : "Select product"}</option>
+              {reportProducts.map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.name} ({product.unit})
+                </option>
+              ))}
+            </select>
+            <div className="mt-3 text-sm text-slate-400">
+              Range currently set to {formatDate(fromDate)} to {formatDate(toDate)}.
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Analyze Product</label>
+            <button
+              onClick={() => loadConsumptionReport()}
+              disabled={consumptionLoading || productsLoading}
+              className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
+            >
+              {consumptionLoading ? "Analyzing..." : "Run Analysis"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-[24px] border border-slate-800 bg-slate-900/60 px-4 py-4">
+          <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Selected Product</div>
+          <div className="mt-2 text-lg font-semibold text-white">{selectedConsumptionProductLabel}</div>
+          <div className="mt-2 text-sm text-slate-400">
+            This analysis is product-specific and is designed to answer owner questions around usage rhythm, stock in flow, stock out behaviour, and stock cover.
+          </div>
+        </div>
+
+        {consumptionError ? (
+          <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {consumptionError}
+          </div>
+        ) : null}
+      </SectionCard>
+
+      {consumptionReport ? (
+        <>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <MetricCard
+              title="Stocked In"
+              value={`${formatNumber(consumptionSummary.total_stocked_in_qty)} ${consumptionProduct.unit || ""}`}
+              hint={formatCurrency(consumptionSummary.total_stocked_in_value)}
+              tone="emerald"
+            />
+            <MetricCard
+              title="Stocked Out"
+              value={`${formatNumber(consumptionSummary.total_stocked_out_qty)} ${consumptionProduct.unit || ""}`}
+              hint={formatCurrency(consumptionSummary.total_stocked_out_value)}
+              tone="rose"
+            />
+            <MetricCard
+              title="Average Daily Usage"
+              value={`${formatNumber(consumptionSummary.average_daily_usage)} ${consumptionProduct.unit || ""}`}
+              hint="Average stock-out quantity per day in this range"
+              tone="amber"
+            />
+            <MetricCard
+              title="1 Unit Lasts"
+              value={formatDays(consumptionSummary.days_per_unit_used)}
+              hint="How many days it takes to consume one unit on average"
+              tone="cyan"
+            />
+            <MetricCard
+              title="Current Stock Cover"
+              value={formatDays(consumptionSummary.current_stock_cover_days)}
+              hint={`${formatNumber(consumptionProduct.current_stock)} ${consumptionProduct.unit} currently on hand`}
+              tone="violet"
+            />
+            <MetricCard
+              title="Current Stock Value"
+              value={formatCurrency(consumptionProduct.current_value)}
+              hint={`Avg ${formatCurrency(consumptionProduct.average_unit_cost)} per ${consumptionProduct.unit}`}
+              tone="slate"
+            />
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[1.15fr,1fr]">
+            <ConsumptionPulseChart
+              data={consumptionCharts.daily_movements || []}
+              selectedDate={selectedMovementDate}
+              onSelect={setSelectedMovementDate}
+              unit={consumptionProduct.unit || "unit"}
+            />
+
+            <SectionCard
+              title="Consumption Reading"
+              eyebrow="Owner Answer"
+              description="A quick spoken-style reading of what the selected product is doing inside the chosen range."
+            >
+              <div className="space-y-4">
+                <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Usage Direction</div>
+                  <div className="mt-2 text-lg font-semibold text-white">
+                    {Number(consumptionSummary.total_stocked_out_qty || 0) > Number(consumptionSummary.total_stocked_in_qty || 0)
+                      ? "Consumption is running ahead of fresh stock-in."
+                      : "Stock-in is keeping pace with consumption."}
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-slate-400">
+                    {Number(consumptionSummary.total_stocked_out_qty || 0) > 0
+                      ? `${consumptionProduct.name} moved out by ${formatNumber(consumptionSummary.total_stocked_out_qty)} ${consumptionProduct.unit} in this range, which works out to ${formatNumber(consumptionSummary.average_daily_usage)} ${consumptionProduct.unit} per day on average.`
+                      : `${consumptionProduct.name} has no stock-out activity in this range yet, so the current stock cover cannot be judged from real usage.`}
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Stock Life</div>
+                  <div className="mt-2 text-lg font-semibold text-white">
+                    {consumptionSummary.current_stock_cover_days
+                      ? `Current stock can cover roughly ${formatDays(consumptionSummary.current_stock_cover_days)}`
+                      : "Stock cover cannot be estimated yet"}
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-slate-400">
+                    This estimate is based on actual stock-out logs within the chosen range, not recipe assumptions.
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Event Density</div>
+                  <div className="mt-2 text-lg font-semibold text-white">
+                    {formatNumber(consumptionSummary.stock_in_events_count)} stock-in events and {formatNumber(consumptionSummary.stock_out_events_count)} stock-out events
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-slate-400">
+                    This helps you judge whether usage is smooth, bursty, or dependent on occasional heavy restocking.
+                  </div>
+                </div>
+              </div>
+            </SectionCard>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <GroupedBarChart
+              title="Daily Quantity Movement"
+              subtitle="Quantity coming in versus quantity going out for the selected product."
+              data={consumptionCharts.daily_movements || []}
+              bars={consumptionQuantityBars}
+              xKey="date"
+              sliceFromEnd
+              labelFormatter={(value) => formatDateCompact(value)}
+              valueFormatter={(value) => `${formatNumber(value)} ${consumptionProduct.unit}`}
+            />
+
+            <GroupedBarChart
+              title="Daily Value Movement"
+              subtitle="Rupee value added versus consumed for the same product over the selected period."
+              data={consumptionCharts.daily_movements || []}
+              bars={consumptionValueBars}
+              xKey="date"
+              sliceFromEnd
+              labelFormatter={(value) => formatDateCompact(value)}
+            />
+          </div>
+
+          <ConsumptionTimeline
+            timeline={consumptionDetails.timeline}
+            unit={consumptionProduct.unit || "unit"}
+          />
+        </>
+      ) : (
+        <EmptyBlock text="Choose a product and run the analysis to open the inventory-consumption workspace." />
+      )}
+    </>
+  );
+
+  return (
+    <div className="space-y-6 text-white">
+      <ProfitUnlockModal
+        open={showProfitUnlockModal}
+        password={profitPassword}
+        error={profitUnlockError}
+        onClose={() => {
+          setShowProfitUnlockModal(false);
+          setProfitPassword("");
+          setProfitUnlockError("");
+        }}
+        onChange={(value) => {
+          setProfitPassword(value);
+          if (profitUnlockError) {
+            setProfitUnlockError("");
+          }
+        }}
+        onSubmit={handleProfitUnlock}
+      />
+
+      <div className="overflow-hidden rounded-[34px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.24),_transparent_26%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.18),_transparent_24%),linear-gradient(135deg,_#020617_0%,_#0f172a_48%,_#111827_100%)] p-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="max-w-3xl">
+            <div className="text-[11px] uppercase tracking-[0.34em] text-emerald-300">
+              Business Command Center
+            </div>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+              Reports that answer the real questions behind the restaurant
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
+              Profit here is calculated from completed orders, manual stock-out cost, and manually logged expenses.
+              Since inventory and expenses stay independent from orders by design, this dashboard is built to bring those
+              numbers together cleanly without forcing the apps to merge operationally.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:min-w-[360px]">
+            {profitUnlocked ? (
+              <MetricCard
+                title="Net Profit"
+                value={formatCurrency(summary.net_profit)}
+                hint={`${formatNumber(summary.profit_margin)}% margin`}
+                tone={Number(summary.net_profit || 0) >= 0 ? "emerald" : "rose"}
+              />
+            ) : (
+              <div className="rounded-[26px] border border-amber-500/25 bg-amber-500/10 p-4 text-amber-100">
+                <div className="text-[11px] uppercase tracking-[0.28em] text-amber-200/80">
+                  Profit Summary
+                </div>
+                <div className="mt-3 text-2xl font-semibold">Locked</div>
+                <div className="mt-2 text-sm text-amber-100/80">
+                  Profit figures stay hidden until you unlock the protected summary tab.
+                </div>
+                <button
+                  onClick={() => setShowProfitUnlockModal(true)}
+                  className="mt-4 rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-200"
+                >
+                  Unlock Profit Summary
+                </button>
+              </div>
+            )}
+            <MetricCard
+              title="Inventory Value"
+              value={formatCurrency(snapshot.inventory_value)}
+              hint={`${formatNumber(snapshot.inventory_items_count)} stocked items`}
+              tone="cyan"
+            />
+          </div>
+        </div>
+      </div>
+
+      <SectionCard
+        title="Date Controls"
+        eyebrow="Range Builder"
+        description="Use quick presets for owner-style review or define a custom date window for audit, tax, or performance checks."
+      >
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-wrap gap-3">
+            {[
+              { key: "today", label: "Today" },
+              { key: "week", label: "Last 7 Days" },
+              { key: "month", label: "This Month" },
+              { key: "30d", label: "Last 30 Days" },
+              { key: "90d", label: "Last 90 Days" },
+            ].map((preset) => (
+              <button
+                key={preset.key}
+                onClick={() => applyPreset(preset.key)}
+                className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                  activePreset === preset.key
+                    ? "bg-emerald-500 text-slate-950"
+                    : "border border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">From Date</label>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(event) => {
+                  setFromDate(event.target.value);
+                  setActivePreset("custom");
+                  clearConsumptionAnalysis();
+                }}
+                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">To Date</label>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(event) => {
+                  setToDate(event.target.value);
+                  setActivePreset("custom");
+                  clearConsumptionAnalysis();
+                }}
+                className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">Load Snapshot</label>
+              <button
+                onClick={() => loadReports()}
+                disabled={loading}
+                className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
+              >
+                {loading ? "Refreshing..." : "Generate Reports"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {error}
+          </div>
+        ) : null}
+      </SectionCard>
+
+      <SectionCard
+        title="Report Views"
+        eyebrow="Switchboard"
+        description="Overview stays broad, Profit Summary stays protected, and Inventory Consumption goes deep on one product at a time."
+      >
+        <ViewTabs
+          activeView={activeView}
+          profitUnlocked={profitUnlocked}
+          onChange={handleViewChange}
+        />
+      </SectionCard>
+
+      {activeView === "overview" ? overviewContent : null}
+      {activeView === "profit" ? profitContent : null}
+      {activeView === "consumption" ? consumptionContent : null}
     </div>
   );
 }

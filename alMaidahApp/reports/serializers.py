@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from inventory.models import Product
+
 
 class DateRangeSerializer(serializers.Serializer):
     from_date = serializers.DateField(required=True)
@@ -9,6 +11,14 @@ class DateRangeSerializer(serializers.Serializer):
         if attrs["to_date"] < attrs["from_date"]:
             raise serializers.ValidationError("To date cannot be earlier than from date.")
         return attrs
+
+
+class InventoryConsumptionRequestSerializer(DateRangeSerializer):
+    product_id = serializers.PrimaryKeyRelatedField(
+        source="product",
+        queryset=Product.objects.all(),
+        required=True,
+    )
 
 
 class SalesReportSerializer(serializers.Serializer):
@@ -48,3 +58,11 @@ class DashboardReportSerializer(serializers.Serializer):
     cogs = serializers.DictField()
     expenses = serializers.DictField()
     profit = serializers.DictField()
+
+
+class InventoryConsumptionReportSerializer(serializers.Serializer):
+    date_range = serializers.DictField()
+    product = serializers.DictField()
+    summary = serializers.DictField()
+    charts = serializers.DictField()
+    details = serializers.DictField()

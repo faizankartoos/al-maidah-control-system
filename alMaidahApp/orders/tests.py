@@ -723,7 +723,11 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
             content_type="application/json"
         )
 
-        self.assertEqual(collect_response.status_code, 200)
+        self.assertEqual(collect_response.status_code, 400)
+        self.assertEqual(
+            collect_response.json()["error"],
+            "Completed unpaid orders assigned to ledger must be collected from Ledger."
+        )
 
         order.refresh_from_db()
         delivery_boy.refresh_from_db()
@@ -731,10 +735,10 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
         cash_drawer = get_cash_drawer()
         cash_drawer.refresh_from_db()
 
-        self.assertEqual(order.payment_status, "PAID")
+        self.assertEqual(order.payment_status, "UNPAID")
         self.assertEqual(delivery_boy.balance, Decimal("0.00"))
-        self.assertEqual(order.customer_account.balance, Decimal("0.00"))
-        self.assertEqual(cash_drawer.balance, Decimal("100.00"))
+        self.assertEqual(order.customer_account.balance, Decimal("100.00"))
+        self.assertEqual(cash_drawer.balance, Decimal("0.00"))
 
     def test_collect_delivery_order_clears_delivery_boy_and_updates_cash_drawer(self):
 

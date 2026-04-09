@@ -772,6 +772,18 @@ class CollectPaymentAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
+        if (
+            order.order_status == "COMPLETED"
+            and order.payment_status != "PAID"
+            and order.customer_account_id
+        ):
+            return Response(
+                {
+                    "error": "Completed unpaid orders assigned to ledger must be collected from Ledger."
+                },
+                status=400
+            )
+
         data = request.data
 
         try:

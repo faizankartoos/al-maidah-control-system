@@ -1164,7 +1164,10 @@ async function submitCollectPayment(){
           </button>
           )}
 
-          {order.payment_status !== "PAID" && order.order_status !== "CANCELLED" && (
+          {order.payment_status !== "PAID"
+            && order.order_status !== "CANCELLED"
+            && !(order.order_status === "COMPLETED")
+            && (
           <button
           onClick={()=>{
           if(!canCollectPayments){
