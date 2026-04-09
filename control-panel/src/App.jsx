@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import LoginScreen from "./components/LoginScreen";
 import CustomerDisplay from "./pages/CustomerDisplay";
-import api, { clearAuthToken, getAuthToken } from "./services/api";
+import api, { buildApiUrl, clearAuthToken, getAuthToken } from "./services/api";
 import { TAB_DEFINITIONS } from "./constants/tabConfig";
 
 
@@ -42,6 +42,96 @@ function WelcomeOverlay({ message }) {
         <div className="welcome-screen__subtitle">
           Entering the live restaurant control environment...
         </div>
+      </div>
+    </div>
+  );
+}
+
+function formatMoney(value) {
+  return Number(value || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function ExternalOrderPrompt({ order, onAccept, onDecline, onDismiss, busy }) {
+  if (!order) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/75 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-[30px] border border-amber-400/25 bg-slate-950/95 p-6 shadow-[0_30px_90px_rgba(15,23,42,0.6)]">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.34em] text-amber-300">
+          New Order Received
+        </div>
+        <h2 className="mt-3 text-2xl font-semibold text-white">Order #{order.id}</h2>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Submitted By</div>
+            <div className="mt-2 text-lg font-semibold text-white">
+              {order.submitted_by_name || order.submitted_by_username || "Unknown user"}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Order Type</div>
+            <div className="mt-2 text-lg font-semibold text-white">
+              {order.order_type_display || order.order_type}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Customer</div>
+            <div className="mt-2 text-lg font-semibold text-white">
+              {order.customer_name || "Unnamed customer"}
+            </div>
+            <div className="mt-1 text-sm text-slate-400">{order.customer_phone || "No phone"}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Amount</div>
+            <div className="mt-2 text-lg font-semibold text-amber-200">
+              Rs {formatMoney(order.total_amount)}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+          <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Items</div>
+          <div className="mt-2 text-sm leading-7 text-slate-200">
+            {(order.items || []).map((item) => `${item.item_name} x${item.quantity}`).join(", ") || "No items"}
+          </div>
+        </div>
+
+        {order.order_note ? (
+          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-4">
+            <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Order Note</div>
+            <div className="mt-2 text-sm leading-7 text-slate-200">{order.order_note}</div>
+          </div>
+        ) : null}
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+          <button
+            onClick={onDecline}
+            disabled={busy}
+            className="flex-1 rounded-2xl bg-rose-600 px-4 py-3 font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60"
+          >
+            Decline
+          </button>
+          <button
+            onClick={onAccept}
+            disabled={busy}
+            className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
+          >
+            Accept
+          </button>
+        </div>
+
+        <button
+          onClick={onDismiss}
+          className="mt-4 w-full rounded-2xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-slate-500"
+        >
+          View Later
+        </button>
       </div>
     </div>
   );
@@ -142,6 +232,14 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
   }, [user]);
 
   const [activeTab, setActiveTab] = useState(availableTabs[0]?.key || null);
+  const [pendingExternalCount, setPendingExternalCount] = useState(0);
+  const [notificationQueue, setNotificationQueue] = useState([]);
+  const [activeNotification, setActiveNotification] = useState(null);
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [externalRefreshKey, setExternalRefreshKey] = useState(0);
+  const knownPendingIdsRef = useRef(new Set());
+  const hasPrimedNotificationsRef = useRef(false);
+  const canManageExternalOrders = availableTabs.some((tab) => tab.key === "MANAGE_ORDERS");
 
   useEffect(() => {
     if (!availableTabs.length) {
@@ -155,6 +253,109 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
     }
   }, [activeTab, availableTabs]);
 
+  useEffect(() => {
+    if (!notificationQueue.length || activeNotification) {
+      return;
+    }
+
+    setActiveNotification(notificationQueue[0]);
+    setNotificationQueue((queue) => queue.slice(1));
+  }, [notificationQueue, activeNotification]);
+
+  useEffect(() => {
+    if (!canManageExternalOrders) {
+      setPendingExternalCount(0);
+      setNotificationQueue([]);
+      setActiveNotification(null);
+      knownPendingIdsRef.current = new Set();
+      hasPrimedNotificationsRef.current = false;
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const pollExternalOrders = async () => {
+      try {
+        const response = await fetch(buildApiUrl("orders/external-requests/?decision=PENDING"));
+        const data = await response.json();
+
+        if (!response.ok || cancelled) {
+          return;
+        }
+
+        setPendingExternalCount(data.length);
+
+        const pendingIds = new Set(data.map((order) => order.id));
+
+        if (!hasPrimedNotificationsRef.current) {
+          knownPendingIdsRef.current = pendingIds;
+          hasPrimedNotificationsRef.current = true;
+          return;
+        }
+
+        const newOrders = data.filter((order) => !knownPendingIdsRef.current.has(order.id));
+        knownPendingIdsRef.current = pendingIds;
+
+        if (newOrders.length) {
+          setNotificationQueue((queue) => {
+            const blockedIds = new Set(queue.map((item) => item.id));
+
+            if (activeNotification) {
+              blockedIds.add(activeNotification.id);
+            }
+
+            const nextQueue = [...queue];
+
+            newOrders.forEach((order) => {
+              if (!blockedIds.has(order.id)) {
+                nextQueue.push(order);
+              }
+            });
+
+            return nextQueue;
+          });
+        }
+      } catch {
+        // Keep the control panel stable if polling fails momentarily.
+      }
+    };
+
+    pollExternalOrders();
+    const intervalId = window.setInterval(pollExternalOrders, 8000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [canManageExternalOrders, activeNotification]);
+
+  const handleExternalDecision = async (orderId, action) => {
+    setDecisionBusy(true);
+
+    try {
+      const response = await fetch(buildApiUrl(`orders/${orderId}/external-decision/`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Failed to update external order");
+        return;
+      }
+
+      setActiveNotification(null);
+      setNotificationQueue((queue) => queue.filter((order) => order.id !== orderId));
+      knownPendingIdsRef.current.delete(orderId);
+      setPendingExternalCount((count) => Math.max(0, count - 1));
+      setExternalRefreshKey((value) => value + 1);
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
   const activeTabDefinition = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
   const ActiveComponent = activeTabDefinition?.component || null;
 
@@ -166,6 +367,14 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
           : "system-theme-night bg-slate-950 text-white"
       }`}
     >
+      <ExternalOrderPrompt
+        order={activeNotification}
+        busy={decisionBusy}
+        onAccept={() => handleExternalDecision(activeNotification.id, "ACCEPT")}
+        onDecline={() => handleExternalDecision(activeNotification.id, "DECLINE")}
+        onDismiss={() => setActiveNotification(null)}
+      />
+
       <div className="mx-auto max-w-[95vw] p-6">
         <div
           className={`overflow-hidden rounded-[32px] px-6 py-6 shadow-[0_35px_90px_rgba(15,23,42,0.18)] ${
@@ -214,6 +423,19 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
               {tab.label}
             </button>
           ))}
+          {canManageExternalOrders ? (
+            <div className={`rounded-full px-4 py-2.5 text-sm font-semibold ${
+              pendingExternalCount
+                ? isDayTheme
+                  ? "border border-amber-300 bg-amber-50 text-amber-900"
+                  : "border border-amber-500/30 bg-amber-500/10 text-amber-100"
+                : isDayTheme
+                  ? "border border-slate-300 bg-white text-slate-600"
+                  : "border border-slate-700 bg-slate-900 text-slate-400"
+            }`}>
+              Pending External: {pendingExternalCount}
+            </div>
+          ) : null}
         </div>
 
         <div className={`mt-6 rounded-[30px] p-6 shadow-[0_25px_70px_rgba(15,23,42,0.12)] ${
@@ -222,7 +444,7 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
             : "border border-slate-800 bg-slate-900/90"
         }`}>
           {ActiveComponent ? (
-            <ActiveComponent currentUser={user} />
+            <ActiveComponent currentUser={user} externalRefreshKey={externalRefreshKey} />
           ) : (
             <div className={`rounded-[22px] border border-dashed px-5 py-12 text-center text-sm ${
               isDayTheme
