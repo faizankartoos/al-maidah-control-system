@@ -17,6 +17,9 @@ alMaidahApp/db.sqlite3old.sqlite3
 control-panel/node_modules/
 control-panel/dist/
 control-panel/build/
+remote-orders/node_modules/
+remote-orders/dist/
+remote-orders/build/
 
 # Logs
 *.log

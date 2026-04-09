@@ -91,7 +91,7 @@ export default function LoginScreen({ onAuthenticated }) {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-950 px-6 py-10 text-white">
+    <div className="relative min-h-screen overflow-x-hidden overflow-y-hidden bg-slate-950 px-4 py-8 text-white sm:px-6 sm:py-10">
       <div className="login-aurora absolute inset-0" />
       <div className="pointer-events-none absolute -left-24 top-16 h-72 w-72 rounded-full bg-emerald-400/10 blur-3xl" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full bg-cyan-400/10 blur-3xl" />
@@ -101,7 +101,7 @@ export default function LoginScreen({ onAuthenticated }) {
           <RestaurantMark />
 
           <div className="mt-8">
-            <h1 className="text-5xl font-semibold tracking-tight text-white sm:text-6xl">
+            <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
               Al-Maidah System Access
             </h1>
           </div>

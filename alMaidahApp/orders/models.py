@@ -1,5 +1,6 @@
 from django.db import models
 from django.db.models import Sum
+from django.contrib.auth.models import User
 from ledger.models import LedgerAccount
 from decimal import Decimal
 
@@ -24,6 +25,18 @@ class Order(models.Model):
         ("PAID", "Paid"),
     )
 
+    SUBMISSION_SOURCES = (
+        ("INTERNAL", "Internal"),
+        ("EXTERNAL", "External"),
+    )
+
+    ACCEPTANCE_STATUS = (
+        ("NOT_REQUIRED", "Not Required"),
+        ("PENDING", "Pending"),
+        ("ACCEPTED", "Accepted"),
+        ("DECLINED", "Declined"),
+    )
+
     order_type = models.CharField(
         max_length=20,
         choices=ORDER_TYPES
@@ -39,6 +52,18 @@ class Order(models.Model):
         max_length=20,
         choices=PAYMENT_STATUS,
         default="UNPAID",
+    )
+
+    submission_source = models.CharField(
+        max_length=20,
+        choices=SUBMISSION_SOURCES,
+        default="INTERNAL",
+    )
+
+    acceptance_status = models.CharField(
+        max_length=20,
+        choices=ACCEPTANCE_STATUS,
+        default="NOT_REQUIRED",
     )
 
     customer_name = models.CharField(
@@ -92,6 +117,27 @@ class Order(models.Model):
         blank=True
     )
     cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+    submitted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_orders",
+    )
+
+    acceptance_decided_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accepted_or_declined_orders",
+    )
+
+    acceptance_decided_at = models.DateTimeField(
         null=True,
         blank=True
     )

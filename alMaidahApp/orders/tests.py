@@ -615,6 +615,237 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(delivery_boy.balance, Decimal("0.00"))
 
 
+class ExternalOrderAcceptanceTests(AuthenticatedOrdersAPITestCase):
+
+    def _control_panel_headers(self):
+        return {"HTTP_X_ALMAIDAH_CLIENT": "control-panel"}
+
+    def test_external_order_can_require_acceptance_and_tracks_submitter(self):
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000777",
+                "name": "Remote User",
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Burger", "qty": 1, "price": "80.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+
+        self.assertEqual(order.submission_source, "EXTERNAL")
+        self.assertEqual(order.acceptance_status, "PENDING")
+        self.assertIsNotNone(order.submitted_by)
+        self.assertEqual(order.submitted_by.username, "orders-admin")
+
+    def test_pending_external_order_stays_out_of_normal_manage_orders_list(self):
+
+        create_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000778",
+                "name": "Pending Customer",
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Pizza", "qty": 1, "price": "120.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        order_id = create_response.json()["order_id"]
+
+        filter_response = self.client.get("/api/orders/filter/?filter=ALL")
+        external_response = self.client.get("/api/orders/external-requests/?decision=PENDING")
+
+        self.assertEqual(filter_response.status_code, 200)
+        self.assertEqual(external_response.status_code, 200)
+
+        listed_ids = {row["id"] for row in filter_response.json()}
+        external_ids = {row["id"] for row in external_response.json()}
+
+        self.assertNotIn(order_id, listed_ids)
+        self.assertIn(order_id, external_ids)
+        pending_row = external_response.json()[0]
+        self.assertEqual(pending_row["submitted_by_username"], "orders-admin")
+
+    def test_declined_external_order_can_be_accepted_later(self):
+
+        create_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000779",
+                "name": "Decision Customer",
+                "address": "Nowhere",
+                "delivery_boy_id": LedgerAccount.objects.create(
+                    name="Remote Rider",
+                    account_type="DELIVERY",
+                    contact_number="7000000779"
+                ).id,
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Wrap", "qty": 1, "price": "90.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        order = Order.objects.get(id=create_response.json()["order_id"])
+
+        decline_response = self.client.post(
+            f"/api/orders/{order.id}/external-decision/",
+            data=json.dumps({"action": "DECLINE"}),
+            content_type="application/json",
+            **self._control_panel_headers()
+        )
+
+        self.assertEqual(decline_response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.acceptance_status, "DECLINED")
+
+        ready_response = self.client.post(f"/api/orders/{order.id}/ready/")
+        self.assertEqual(ready_response.status_code, 400)
+
+        accept_response = self.client.post(
+            f"/api/orders/{order.id}/external-decision/",
+            data=json.dumps({"action": "ACCEPT"}),
+            content_type="application/json",
+            **self._control_panel_headers()
+        )
+
+        self.assertEqual(accept_response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.acceptance_status, "ACCEPTED")
+        self.assertIsNotNone(order.acceptance_decided_by)
+        self.assertEqual(order.acceptance_decided_by.username, "orders-admin")
+
+        filter_response = self.client.get("/api/orders/filter/?filter=ALL")
+        listed_ids = {row["id"] for row in filter_response.json()}
+
+        self.assertIn(order.id, listed_ids)
+
+    def test_external_delivery_requires_acceptance_does_not_assign_rider_balance_until_accepted(self):
+
+        delivery_boy = LedgerAccount.objects.create(
+            name="Acceptance Rider",
+            account_type="DELIVERY",
+            contact_number="7000000780"
+        )
+
+        create_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000780",
+                "name": "Remote Delivery",
+                "address": "Acceptance Lane",
+                "delivery_boy_id": delivery_boy.id,
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Biryani", "qty": 1, "price": "150.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+
+        delivery_boy.refresh_from_db()
+        self.assertEqual(delivery_boy.balance, Decimal("0.00"))
+
+        order = Order.objects.get(id=create_response.json()["order_id"])
+
+        accept_response = self.client.post(
+            f"/api/orders/{order.id}/external-decision/",
+            data=json.dumps({"action": "ACCEPT"}),
+            content_type="application/json",
+            **self._control_panel_headers()
+        )
+
+        self.assertEqual(accept_response.status_code, 200)
+
+        delivery_boy.refresh_from_db()
+        self.assertEqual(delivery_boy.balance, Decimal("-150.00"))
+
+    def test_external_orders_that_require_acceptance_must_use_pay_later(self):
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_NOW",
+                "payment_method": "CASH",
+                "payment_amount": "90.00",
+                "phone": "9900000781",
+                "name": "Remote Paynow",
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Wrap", "qty": 1, "price": "90.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"],
+            "External orders that require acceptance must be submitted with Pay Later."
+        )
+
+    def test_remote_orders_client_cannot_accept_or_decline_external_orders(self):
+
+        create_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000782",
+                "name": "Blocked Remote",
+                "submission_source": "EXTERNAL",
+                "require_acceptance": True,
+                "items": [
+                    {"name": "Pizza", "qty": 1, "price": "120.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        order_id = create_response.json()["order_id"]
+
+        response = self.client.post(
+            f"/api/orders/{order_id}/external-decision/",
+            data=json.dumps({"action": "ACCEPT"}),
+            content_type="application/json",
+            HTTP_X_ALMAIDAH_CLIENT="remote-orders"
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error"],
+            "External order decisions are only allowed from the main control panel."
+        )
+
+
 class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
 
     def test_collect_requires_special_collect_permission(self):

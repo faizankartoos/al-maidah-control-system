@@ -207,6 +207,36 @@ def _set_reference_balance(
 
 
 @transaction.atomic
+def sync_external_order_acceptance(order):
+
+    if order.submission_source != "EXTERNAL":
+        return order
+
+    desired_delivery_balance = Decimal("0.00")
+
+    if (
+        order.acceptance_status == "ACCEPTED"
+        and order.payment_status != "PAID"
+        and order.order_type == "DELIVERY"
+        and order.delivery_boy
+        and order.order_status != "SCHEDULED"
+    ):
+        desired_delivery_balance = Decimal("0.00") - Decimal(str(order.total_amount or 0))
+
+    if order.delivery_boy:
+        _set_reference_balance(
+            order.delivery_boy,
+            f"ORDER-{order.id}",
+            desired_delivery_balance,
+            payment_type="SYSTEM",
+            credit_description="External order delivery balance reduced after acceptance decision",
+            debit_description="External order delivery balance increased after acceptance decision"
+        )
+
+    return order
+
+
+@transaction.atomic
 def update_order_details(
     order,
     *,

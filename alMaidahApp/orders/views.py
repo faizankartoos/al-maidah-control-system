@@ -7,6 +7,7 @@ from .services import (
     collect_payment,
     complete_unpaid_order,
     process_payment,
+    sync_external_order_acceptance,
     update_order_details,
 )
 from django.db.models import Sum
@@ -29,10 +30,101 @@ from .serializers import OrderSerializer
 from ledger.models import LedgerAccount
 
 
+ACTIVE_ACCEPTANCE_STATUSES = {"NOT_REQUIRED", "ACCEPTED"}
+
+
+def _parse_bool(value):
+    if isinstance(value, bool):
+        return value
+
+    if value in (None, "", 0, "0", "false", "False", "FALSE", "no", "No", "NO", "off", "OFF"):
+        return False
+
+    return True
+
+
+def _order_is_operational(order):
+    return order.acceptance_status in ACTIVE_ACCEPTANCE_STATUSES
+
+
+def _blocked_acceptance_response(order):
+    if order.acceptance_status == "PENDING":
+        return Response(
+            {"error": "This order is still waiting for acceptance."},
+            status=400,
+        )
+
+    if order.acceptance_status == "DECLINED":
+        return Response(
+            {"error": "This external order was declined. Accept it again from External Orders first."},
+            status=400,
+        )
+
+    return None
+
+
+def _submitted_by_name(user):
+    if not user:
+        return None
+
+    full_name = user.get_full_name().strip()
+    return full_name or user.username
+
+
+def _serialize_external_order(order):
+    amount_paid = order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    remaining_amount = order.total_amount - amount_paid
+
+    if remaining_amount < 0:
+        remaining_amount = Decimal("0.00")
+
+    return {
+        "id": order.id,
+        "order_type": order.order_type,
+        "order_type_display": order.get_order_type_display(),
+        "order_status": order.order_status,
+        "payment_status": order.payment_status,
+        "acceptance_status": order.acceptance_status,
+        "acceptance_status_display": order.get_acceptance_status_display(),
+        "submission_source": order.submission_source,
+        "submission_source_display": order.get_submission_source_display(),
+        "customer_name": order.customer_name,
+        "customer_phone": order.customer_phone,
+        "delivery_address": order.delivery_address,
+        "order_note": order.order_note,
+        "table_number": order.table_number,
+        "scheduled_time": order.scheduled_time,
+        "guest_count": order.guest_count,
+        "total_amount": order.total_amount,
+        "remaining_amount": remaining_amount,
+        "created_at": order.created_at,
+        "submitted_by": order.submitted_by_id,
+        "submitted_by_name": _submitted_by_name(order.submitted_by),
+        "submitted_by_username": order.submitted_by.username if order.submitted_by else None,
+        "acceptance_decided_by": order.acceptance_decided_by_id,
+        "acceptance_decided_by_name": _submitted_by_name(order.acceptance_decided_by),
+        "acceptance_decided_at": order.acceptance_decided_at,
+        "delivery_boy": order.delivery_boy_id,
+        "delivery_boy_name": order.delivery_boy.name if order.delivery_boy else None,
+        "items": [
+            {
+                "id": item.id,
+                "item_name": item.item_name,
+                "quantity": item.quantity,
+                "price": item.price,
+                "total_price": item.total_price,
+            }
+            for item in order.items.all()
+        ],
+    }
+
+
 
 class OrderListAPIView(ListAPIView):
 
-    queryset = Order.objects.all().order_by("-created_at")
+    queryset = Order.objects.filter(
+        acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES
+    ).order_by("-created_at")
     serializer_class = OrderSerializer
 
 
@@ -115,6 +207,17 @@ class CreateOrderAPIView(APIView):
         payment_mode = (data.get("payment_mode") or "").strip()
         payment_method = (data.get("payment_method") or "").strip()
         delivery_boy_id = data.get("delivery_boy_id")
+        submission_source = (data.get("submission_source") or "INTERNAL").strip().upper()
+        require_acceptance = _parse_bool(data.get("require_acceptance"))
+
+        if submission_source not in {"INTERNAL", "EXTERNAL"}:
+            return Response({"error": "Select a valid submission source"}, status=400)
+
+        if submission_source == "EXTERNAL" and require_acceptance and payment_mode == "PAY_NOW":
+            return Response(
+                {"error": "External orders that require acceptance must be submitted with Pay Later."},
+                status=400
+            )
 
         if payment_method == "PAY_LATER" and payment_mode != "PAY_LATER":
             payment_mode = "PAY_LATER"
@@ -227,6 +330,7 @@ class CreateOrderAPIView(APIView):
             table_number = None
 
         order_status = "SCHEDULED" if scheduled_time else "PROCESSING"
+        acceptance_status = "PENDING" if require_acceptance else "NOT_REQUIRED"
 
         # ---------------- CREATE ORDER ----------------
 
@@ -245,7 +349,10 @@ class CreateOrderAPIView(APIView):
                 delivery_charge=delivery_charge,
                 order_status=order_status,
                 scheduled_time=scheduled_time,
-                guest_count=guest_count
+                guest_count=guest_count,
+                submission_source=submission_source,
+                acceptance_status=acceptance_status,
+                submitted_by=request.user if request.user and request.user.is_authenticated else None,
             )
 
             for item in items:
@@ -262,7 +369,12 @@ class CreateOrderAPIView(APIView):
             # ---------------- PAYMENT RULES ----------------
 
             if payment_mode == "PAY_LATER":
-                if order_type == "DELIVERY" and delivery_boy and order_status != "SCHEDULED":
+                if (
+                    acceptance_status in ACTIVE_ACCEPTANCE_STATUSES
+                    and order_type == "DELIVERY"
+                    and delivery_boy
+                    and order_status != "SCHEDULED"
+                ):
                     record_debit(
                         account=delivery_boy,
                         amount=total,
@@ -320,7 +432,9 @@ class CreateOrderAPIView(APIView):
             {
                 "success": True,
                 "order_id": order.id,
-                "total": order.total_amount
+                "total": order.total_amount,
+                "acceptance_status": order.acceptance_status,
+                "submission_source": order.submission_source,
             },
             status=201
         )
@@ -582,6 +696,8 @@ class ActiveOrdersAPIView(APIView):
 
         orders = Order.objects.filter(
             order_status="PROCESSING"
+        ).filter(
+            acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES
         ).order_by("-created_at")
 
         data = []
@@ -738,6 +854,10 @@ class UpdateOrderAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
+
         if order.order_status not in {"PROCESSING", "READY"}:
             return Response(
                 {"error": "Only processing or ready orders can be updated"},
@@ -771,6 +891,10 @@ class CollectPaymentAPIView(APIView):
             order = Order.objects.get(pk=pk)
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
+
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
 
         if (
             order.order_status == "COMPLETED"
@@ -844,6 +968,10 @@ class CompleteOrderAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error":"Order not found"}, status=404)
 
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
+
         if order.order_status != "READY":
             return Response({"error":"Only ready orders can be completed"}, status=400)
 
@@ -877,6 +1005,10 @@ class ReadyOrderAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
+
         if order.order_status != "PROCESSING":
             return Response({"error": "Only processing orders can be marked ready"}, status=400)
 
@@ -899,6 +1031,10 @@ class CancelOrderAPIView(APIView):
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
+
         cooked = bool(request.data.get("cooked", False))
         refunded = bool(request.data.get("refunded", False))
 
@@ -919,8 +1055,80 @@ class CancelOrderAPIView(APIView):
 
         return Response({"success": True})
 
- 
-    
+
+class ExternalOrdersAPIView(APIView):
+    required_tabs = ("MANAGE_ORDERS",)
+
+    def get(self, request):
+        decision = (request.query_params.get("decision") or "ALL").strip().upper()
+        valid_statuses = {"PENDING", "ACCEPTED", "DECLINED"}
+
+        queryset = (
+            Order.objects
+            .filter(submission_source="EXTERNAL")
+            .select_related("submitted_by", "acceptance_decided_by", "delivery_boy")
+            .prefetch_related("items", "payments")
+            .order_by("-created_at", "-id")
+        )
+
+        if decision in valid_statuses:
+            queryset = queryset.filter(acceptance_status=decision)
+
+        data = [_serialize_external_order(order) for order in queryset[:100]]
+        return Response(data)
+
+
+class ExternalOrderDecisionAPIView(APIView):
+    required_tabs = ("MANAGE_ORDERS",)
+
+    def post(self, request, pk):
+        client_name = (request.headers.get("X-AlMaidah-Client") or "").strip().lower()
+
+        if client_name != "control-panel":
+            return Response(
+                {"error": "External order decisions are only allowed from the main control panel."},
+                status=403
+            )
+
+        try:
+            order = Order.objects.select_related("submitted_by", "acceptance_decided_by", "delivery_boy").prefetch_related("items", "payments").get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({"error": "Order not found"}, status=404)
+
+        if order.submission_source != "EXTERNAL":
+            return Response({"error": "Only external orders can be accepted or declined here."}, status=400)
+
+        action = (request.data.get("action") or "").strip().upper()
+
+        if action not in {"ACCEPT", "DECLINE"}:
+            return Response({"error": "Select a valid action"}, status=400)
+
+        if action == "ACCEPT" and order.acceptance_status not in {"PENDING", "DECLINED"}:
+            return Response({"error": "This order does not need acceptance right now."}, status=400)
+
+        if action == "DECLINE" and order.acceptance_status != "PENDING":
+            return Response({"error": "Only pending external orders can be declined."}, status=400)
+
+        if action == "ACCEPT":
+            order.acceptance_status = "ACCEPTED"
+        else:
+            order.acceptance_status = "DECLINED"
+
+        order.acceptance_decided_by = request.user if request.user and request.user.is_authenticated else None
+        order.acceptance_decided_at = timezone.now()
+        order.save(update_fields=["acceptance_status", "acceptance_decided_by", "acceptance_decided_at"])
+        sync_external_order_acceptance(order)
+
+        order.refresh_from_db()
+
+        return Response(
+            {
+                "success": True,
+                "order": _serialize_external_order(order),
+            }
+        )
+
+
 class OrdersFilterAPIView(APIView):
     required_tabs = ("MANAGE_ORDERS",)
 
@@ -932,7 +1140,12 @@ class OrdersFilterAPIView(APIView):
         from_date = request.query_params.get("from_date")
         to_date = request.query_params.get("to_date")
 
-        qs = Order.objects.all().prefetch_related("items", "payments")
+        qs = (
+            Order.objects
+            .filter(acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES)
+            .select_related("submitted_by")
+            .prefetch_related("items", "payments")
+        )
 
         if filter_type in ["PROCESSING","READY","COMPLETED","CANCELLED"]:
             qs = qs.filter(order_status=filter_type)
@@ -990,6 +1203,8 @@ class OrdersFilterAPIView(APIView):
                 "order_status": o.order_status,
                 "payment_status": o.payment_status,
                 "payment_mode": payment_mode,
+                "submission_source": o.submission_source,
+                "acceptance_status": o.acceptance_status,
                 "total_amount": o.total_amount,
                 "remaining_amount": remaining_amount,
                 "customer_name": o.customer_name,
@@ -997,6 +1212,8 @@ class OrdersFilterAPIView(APIView):
                 "delivery_address": o.delivery_address,
                 "created_at": o.created_at,
                 "scheduled_time": o.scheduled_time,
+                "submitted_by_name": _submitted_by_name(o.submitted_by),
+                "submitted_by_username": o.submitted_by.username if o.submitted_by else None,
                 "items": [
                     {
                         "id": item.id,
@@ -1044,6 +1261,10 @@ class StartScheduledOrderAPIView(APIView):
 
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
+
+        blocked_response = _blocked_acceptance_response(order)
+        if blocked_response:
+            return blocked_response
 
         if order.order_status != "SCHEDULED":
             return Response({"error": "Order is not scheduled"}, status=400)

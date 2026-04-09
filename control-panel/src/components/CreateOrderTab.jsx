@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import api from "../services/api";
+import api, { buildApiUrl } from "../services/api";
 
 const ORDER_TYPE_META = {
   DINE_IN: {
@@ -29,7 +29,7 @@ function formatMoney(value) {
   });
 }
 
-export default function OrdersTab() {
+export default function OrdersTab({ externalMode = false }) {
   const inputStyle = `
   w-full bg-slate-600 p-3 rounded text-white
   outline-none border border-slate-700
@@ -53,6 +53,7 @@ export default function OrdersTab() {
   const [name,setName] = useState("")
   const [address,setAddress] = useState("")
   const [orderNote,setOrderNote] = useState("")
+  const [requireAcceptance, setRequireAcceptance] = useState(false)
 
   const [isScheduled,setIsScheduled] = useState(false)
   const [scheduleDate,setScheduleDate] = useState("")
@@ -82,7 +83,7 @@ export default function OrdersTab() {
 
   useEffect(() => {
 
-  fetch("http://localhost:8000/api/ledger/delivery-boys/")
+  fetch(buildApiUrl("ledger/delivery-boys/"))
     .then(res => res.json())
     .then(data => setDeliveryBoys(data))
 
@@ -229,6 +230,7 @@ export default function OrdersTab() {
   setName("")
   setAddress("")
   setOrderNote("")
+  setRequireAcceptance(false)
 
   setSelectedDeliveryBoy("")
 
@@ -249,6 +251,11 @@ export default function OrdersTab() {
 
     if(!orderType){
       showToast("Order type missing","error")
+      return
+    }
+
+    if(externalMode && requireAcceptance && finalMode === "PAY_NOW"){
+      showToast("Require Acceptance orders must be submitted with Pay Later.","warning")
       return
     }
 
@@ -274,6 +281,8 @@ export default function OrdersTab() {
 
       discount:discount,
       delivery_charge:deliveryCharge,
+      submission_source: externalMode ? "EXTERNAL" : "INTERNAL",
+      require_acceptance: externalMode ? requireAcceptance : false,
 
       items:orderItems
 
@@ -281,7 +290,7 @@ export default function OrdersTab() {
 
     try{
 
-      const res = await fetch("http://localhost:8000/api/orders/create/",{
+      const res = await fetch(buildApiUrl("orders/create/"),{
         method:"POST",
         headers:{ "Content-Type":"application/json" },
         body:JSON.stringify(payload)
@@ -291,7 +300,11 @@ export default function OrdersTab() {
 
       if(res.ok){
 
-        showToast("Order placed","success")
+        if (data.acceptance_status === "PENDING") {
+          showToast("External order submitted for acceptance","success")
+        } else {
+          showToast("Order placed","success")
+        }
         resetOrderScreen()
 
       }
@@ -407,9 +420,9 @@ export default function OrdersTab() {
   /* ORDER TYPE SCREEN */
 
 	const DeliveryModal = showDeliveryModal && (
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-  <div className="bg-gray-900 p-6 rounded-xl w-[440px]">
+  <div className="w-full max-w-md rounded-xl bg-gray-900 p-6">
 
     <div className="flex justify-between mb-4">
 
@@ -799,7 +812,7 @@ Assign Delivery Boy
 
     
 
-	    <div className="p-6 text-white">
+	    <div className="px-0 py-3 text-white sm:p-6">
 
 	      <div className="space-y-6">
 	        <div className="rounded-[28px] border border-slate-800 bg-[radial-gradient(circle_at_top_right,_rgba(16,185,129,0.14),_transparent_30%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(15,23,42,0.88))] p-6 shadow-[0_24px_60px_rgba(15,23,42,0.35)]">
@@ -1046,6 +1059,30 @@ Assign Delivery Boy
 	                />
 	              </div>
 
+	              {externalMode && (
+	                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4">
+	                  <div className="flex items-start justify-between gap-4">
+	                    <div>
+	                      <div className="text-sm font-semibold text-amber-100">Require Acceptance</div>
+	                      <div className="mt-1 text-sm leading-6 text-amber-50/80">
+	                        If enabled, this external order will wait in External Orders until someone accepts or declines it.
+	                      </div>
+	                    </div>
+	                    <label className="inline-flex cursor-pointer items-center gap-3">
+	                      <span className={`text-xs font-semibold uppercase tracking-[0.24em] ${requireAcceptance ? "text-amber-100" : "text-slate-400"}`}>
+	                        {requireAcceptance ? "On" : "Off"}
+	                      </span>
+	                      <input
+	                        type="checkbox"
+	                        checked={requireAcceptance}
+	                        onChange={(e)=>setRequireAcceptance(e.target.checked)}
+	                        className="h-5 w-5 rounded border-slate-500 bg-slate-900 text-amber-400 focus:ring-amber-400"
+	                      />
+	                    </label>
+	                  </div>
+	                </div>
+	              )}
+
 	              <div className="rounded-2xl bg-gradient-to-r from-emerald-500 to-green-500 p-4 text-white shadow-lg shadow-emerald-900/30">
 	                <div className="flex items-center justify-between text-sm uppercase tracking-[0.25em] text-emerald-50/80">
 	                  <span>Total</span>
@@ -1070,9 +1107,9 @@ Assign Delivery Boy
 
       {showPaymentModal && (
 
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-          <div className="bg-white p-6 rounded text-black">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
 
             <button
               onClick={()=>submitOrder("PAY_LATER",null,0)}
@@ -1082,14 +1119,21 @@ Assign Delivery Boy
             </button>
 
             <button
+              disabled={externalMode && requireAcceptance}
               onClick={()=>{
                 setShowPaymentModal(false)
                 setShowMethodModal(true)
               }}
-              className="block w-full bg-green-600 text-white p-3 rounded"
+              className={`block w-full p-3 rounded ${externalMode && requireAcceptance ? "cursor-not-allowed bg-slate-300 text-slate-600" : "bg-green-600 text-white"}`}
             >
               PAY NOW
             </button>
+
+            {externalMode && requireAcceptance && (
+              <div className="mt-3 max-w-sm text-center text-sm text-slate-600">
+                Orders waiting for acceptance stay on Pay Later so nothing financial is recorded before they are accepted.
+              </div>
+            )}
 
           </div>
 
@@ -1103,9 +1147,9 @@ Assign Delivery Boy
 
       {showMethodModal && (
 
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-          <div className="bg-white p-6 rounded text-black">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
 
             <button
               onClick={()=>{
@@ -1159,9 +1203,9 @@ Assign Delivery Boy
 
       {showAmountModal && (
 
-        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-          <div className="bg-white p-6 rounded text-black">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
 
             <div className="mb-3">Total: ₹{total}</div>
 
@@ -1174,7 +1218,7 @@ Assign Delivery Boy
             />
 
             {paymentMethod === "MIXED" && (
-              <div className="grid grid-cols-2 gap-3 mb-3">
+              <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <input
                   type="number"
                   placeholder="Cash Received"

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import api from "../services/api";
+import api, { buildApiUrl } from "../services/api";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-IN", {
@@ -32,6 +32,13 @@ function paymentBadge(status) {
   if (status === "PAID") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
   if (status === "UNPAID") return "border-rose-500/30 bg-rose-500/10 text-rose-300";
   return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+}
+
+function acceptanceBadge(status) {
+  if (status === "ACCEPTED") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+  if (status === "PENDING") return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+  if (status === "DECLINED") return "border-rose-500/30 bg-rose-500/10 text-rose-300";
+  return "border-slate-700 bg-slate-800 text-slate-200";
 }
 
 function orderTypeLabel(orderType) {
@@ -118,7 +125,13 @@ function DetailField({ label, value, valueClassName = "", className = "" }) {
     </div>
   );
 }
-export default function ManageOrdersTab({ currentUser }) {
+export default function ManageOrdersTab({
+  currentUser,
+  externalRefreshKey = 0,
+  compactMode = false,
+  showExternalQueue = true,
+  allowExternalDecisions = true,
+}) {
   const inputStyle = `
     w-full bg-slate-800 p-2 rounded text-white
     outline-none border border-slate-700
@@ -126,6 +139,11 @@ export default function ManageOrdersTab({ currentUser }) {
     transition-all duration-200
     `
   const [orders, setOrders] = useState([]);
+  const [manageView, setManageView] = useState("OPERATIONS");
+  const [externalOrders, setExternalOrders] = useState([]);
+  const [externalDecisionFilter, setExternalDecisionFilter] = useState("ALL");
+  const [externalLoading, setExternalLoading] = useState(false);
+  const [externalActionId, setExternalActionId] = useState(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("ALL");
   const [deliveryBoys, setDeliveryBoys] = useState([]);
@@ -206,7 +224,7 @@ export default function ManageOrdersTab({ currentUser }) {
       params.set("exclude_address_text", excludeAddressText.trim());
     }
 
-    const res = await fetch(`http://localhost:8000/api/orders/filter/?${params.toString()}`);
+    const res = await fetch(buildApiUrl(`orders/filter/?${params.toString()}`));
     const data = await res.json();
 
     if (!res.ok) {
@@ -217,9 +235,80 @@ export default function ManageOrdersTab({ currentUser }) {
     setOrders(data);
   }
 
+  async function fetchExternalOrders(decision = externalDecisionFilter) {
+    if (!showExternalQueue) {
+      return;
+    }
+
+    try {
+      setExternalLoading(true);
+
+      const params = new URLSearchParams();
+      if (decision && decision !== "ALL") {
+        params.set("decision", decision);
+      }
+
+      const res = await fetch(buildApiUrl(`orders/external-requests/?${params.toString()}`));
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Failed to load external orders");
+        return;
+      }
+
+      setExternalOrders(data);
+    } finally {
+      setExternalLoading(false);
+    }
+  }
+
+  async function handleExternalDecision(orderId, action) {
+    setExternalActionId(orderId);
+
+    try {
+      const res = await fetch(buildApiUrl(`orders/${orderId}/external-decision/`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Failed to update external order");
+        return;
+      }
+
+      await fetchExternalOrders();
+      await fetchOrders();
+    } finally {
+      setExternalActionId(null);
+    }
+  }
+
   useEffect(() => {
     fetchOrders();
   }, [filter, deliveryBoyFilter, excludeAddressText, fromDate, toDate]);
+
+  useEffect(() => {
+    if (!showExternalQueue) {
+      setManageView("OPERATIONS");
+      setExternalOrders([]);
+      return;
+    }
+
+    if (manageView === "EXTERNAL" && !showExternalQueue) {
+      setManageView("OPERATIONS");
+    }
+  }, [showExternalQueue, manageView]);
+
+  useEffect(() => {
+    if (!showExternalQueue) {
+      return;
+    }
+
+    fetchExternalOrders();
+  }, [externalDecisionFilter, externalRefreshKey, showExternalQueue]);
 
 
 
@@ -239,7 +328,7 @@ export default function ManageOrdersTab({ currentUser }) {
         setSelectedCategory(null);
       });
 
-    fetch("http://localhost:8000/api/ledger/delivery-boys/")
+    fetch(buildApiUrl("ledger/delivery-boys/"))
       .then(res => res.json())
       .then(data => setDeliveryBoys(data));
   }, []);
@@ -266,6 +355,21 @@ export default function ManageOrdersTab({ currentUser }) {
     );
   });
 
+  const filteredExternalOrders = externalOrders.filter((order) => {
+    const term = search.trim().toLowerCase();
+
+    if (!term) {
+      return true;
+    }
+
+    return (
+      order.id.toString().includes(term) ||
+      (order.customer_name || "").toLowerCase().includes(term) ||
+      (order.submitted_by_name || "").toLowerCase().includes(term) ||
+      (order.submitted_by_username || "").toLowerCase().includes(term)
+    );
+  });
+
   const dashboardStats = useMemo(() => {
     const totalValue = filteredOrders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
     const remainingValue = filteredOrders.reduce(
@@ -282,6 +386,15 @@ export default function ManageOrdersTab({ currentUser }) {
       remainingValue,
     };
   }, [filteredOrders]);
+
+  const externalStats = useMemo(() => {
+    return {
+      total: filteredExternalOrders.length,
+      pending: filteredExternalOrders.filter((order) => order.acceptance_status === "PENDING").length,
+      accepted: filteredExternalOrders.filter((order) => order.acceptance_status === "ACCEPTED").length,
+      declined: filteredExternalOrders.filter((order) => order.acceptance_status === "DECLINED").length,
+    };
+  }, [filteredExternalOrders]);
 
   function clearUpdateError(field) {
     setUpdateErrors((prev) => {
@@ -357,7 +470,7 @@ export default function ManageOrdersTab({ currentUser }) {
   async function startScheduledOrder(order){
 
   const res = await fetch(
-    `http://localhost:8000/api/orders/${order.id}/start/`,
+    buildApiUrl(`orders/${order.id}/start/`),
     { method:"POST" }
   )
 
@@ -378,7 +491,7 @@ export default function ManageOrdersTab({ currentUser }) {
 
   function printOrder(id){
 
-  fetch(`http://localhost:8000/api/orders/${id}/`)
+  fetch(buildApiUrl(`orders/${id}/`))
     .then(res => res.json())
     .then(order => {
 
@@ -532,7 +645,7 @@ export default function ManageOrdersTab({ currentUser }) {
 
   function viewOrder(id) {
 
-    fetch(`http://localhost:8000/api/orders/${id}/`)
+    fetch(buildApiUrl(`orders/${id}/`))
       .then(res => res.json())
       .then(data => {
         setSelectedOrder(data);
@@ -545,7 +658,7 @@ export default function ManageOrdersTab({ currentUser }) {
 
   function updateOrder(id) {
 
-    fetch(`http://localhost:8000/api/orders/${id}/`)
+    fetch(buildApiUrl(`orders/${id}/`))
       .then(res => res.json())
       .then(data => {
 
@@ -672,14 +785,11 @@ export default function ManageOrdersTab({ currentUser }) {
 
     };
 
-    const res = await fetch(
-      `http://localhost:8000/api/orders/${selectedOrder.id}/update/`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      }
-    );
+    const res = await fetch(buildApiUrl(`orders/${selectedOrder.id}/update/`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
 
     const data = await res.json();
 
@@ -762,20 +872,17 @@ async function submitCollectPayment(){
     }
   }
 
-  const res = await fetch(
-    `http://localhost:8000/api/orders/${selectedOrder.id}/collect-payment/`,
-    {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({
-        amount:amount,
-        payment_type:collectMethod,
-        cash_amount: collectMethod === "MIXED" ? cashAmount : 0,
-        online_amount: collectMethod === "MIXED" ? onlineAmount : 0,
-        deduct_change: changeAmount > 0
-      })
-    }
-  )
+  const res = await fetch(buildApiUrl(`orders/${selectedOrder.id}/collect-payment/`), {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      amount:amount,
+      payment_type:collectMethod,
+      cash_amount: collectMethod === "MIXED" ? cashAmount : 0,
+      online_amount: collectMethod === "MIXED" ? onlineAmount : 0,
+      deduct_change: changeAmount > 0
+    })
+  })
 
   const data = await res.json()
 
@@ -805,10 +912,7 @@ async function submitCollectPayment(){
 
  async function markOrderReady(order){
 
-  const res = await fetch(
-    `http://localhost:8000/api/orders/${order.id}/ready/`,
-    { method:"POST" }
-  )
+  const res = await fetch(buildApiUrl(`orders/${order.id}/ready/`), { method:"POST" })
 
   const data = await res.json()
 
@@ -828,10 +932,7 @@ async function submitCollectPayment(){
   // already paid → simple complete
   if(order.payment_status === "PAID"){
 
-    const res = await fetch(
-      `http://localhost:8000/api/orders/${order.id}/complete/`,
-      { method:"POST" }
-    )
+    const res = await fetch(buildApiUrl(`orders/${order.id}/complete/`), { method:"POST" })
 
     const data = await res.json()
 
@@ -886,21 +987,18 @@ async function submitCollectPayment(){
     }
   }
 
-  const res = await fetch(
-    `http://localhost:8000/api/orders/${cancelOrderTarget.id}/cancel/`,
-    {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({
-        cooked: cooked,
-        refunded: cancelOrderTarget.payment_status === "PAID" ? cancelRefunded : false,
-        refund_amount:
-          cancelOrderTarget.payment_status === "PAID" && cancelRefunded
-            ? Number(cancelRefundAmount || 0)
-            : 0
-      })
-    }
-  )
+  const res = await fetch(buildApiUrl(`orders/${cancelOrderTarget.id}/cancel/`), {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({
+      cooked: cooked,
+      refunded: cancelOrderTarget.payment_status === "PAID" ? cancelRefunded : false,
+      refund_amount:
+        cancelOrderTarget.payment_status === "PAID" && cancelRefunded
+          ? Number(cancelRefundAmount || 0)
+          : 0
+    })
+  })
 
   const data = await res.json()
 
@@ -938,11 +1036,38 @@ async function submitCollectPayment(){
 	        </p>
 	      </div>
 	      <div className="text-sm text-slate-400">
-	        Showing <span className="font-semibold text-white">{filteredOrders.length}</span> order{filteredOrders.length === 1 ? "" : "s"}
+	        Showing <span className="font-semibold text-white">{manageView === "OPERATIONS" ? filteredOrders.length : filteredExternalOrders.length}</span> {manageView === "OPERATIONS" ? `order${(manageView === "OPERATIONS" ? filteredOrders.length : filteredExternalOrders.length) === 1 ? "" : "s"}` : `external request${filteredExternalOrders.length === 1 ? "" : "s"}`}
 	      </div>
 	    </div>
 	  </div>
 
+	  <div className="flex flex-wrap gap-3">
+	    <button
+	      onClick={() => setManageView("OPERATIONS")}
+	      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+	        manageView === "OPERATIONS"
+	          ? "bg-sky-500 text-slate-950"
+	          : "border border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
+	      }`}
+	    >
+	      Operations
+	    </button>
+	    {showExternalQueue && (
+	    <button
+	      onClick={() => setManageView("EXTERNAL")}
+	      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+	        manageView === "EXTERNAL"
+	          ? "bg-amber-400 text-slate-950"
+	          : "border border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
+	      }`}
+	    >
+	      External Orders
+	    </button>
+	    )}
+	  </div>
+
+	  {manageView === "OPERATIONS" ? (
+	  <>
 	  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
 	    <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
 	      <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Loaded Orders</div>
@@ -1065,6 +1190,142 @@ async function submitCollectPayment(){
 	    </div>
 	  </div>
 
+	  {compactMode ? (
+	  <div className="space-y-4">
+	    {filteredOrders.length === 0 ? (
+	      <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
+	        No orders match the current filter yet.
+	      </div>
+	    ) : (
+	      filteredOrders.map(order => (
+	        <div key={order.id} className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+	          <div className="flex flex-col gap-4">
+	            <div className="flex flex-wrap items-center gap-2">
+	              <div className="text-xl font-semibold text-white">#{order.id}</div>
+	              <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusBadge(order.order_status)}`}>
+	                {order.order_status}
+	              </span>
+	              <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${paymentBadge(order.payment_status)}`}>
+	                {order.payment_status}
+	              </span>
+	              <span className="inline-flex rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-200">
+	                {orderTypeLabel(order.order_type)}
+	              </span>
+	            </div>
+
+	            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+	              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Locator</div>
+	                <div className="mt-2 text-sm text-slate-200">{orderQuickLocator(order)}</div>
+	              </div>
+	              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Created</div>
+	                <div className="mt-2 text-sm text-slate-200">
+	                  {order.order_status === "SCHEDULED" && order.scheduled_time
+	                    ? `For ${formatDateTime(order.scheduled_time)}`
+	                    : formatDateTime(order.created_at)}
+	                </div>
+	              </div>
+	              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Payment Mode</div>
+	                <div className="mt-2 text-sm text-slate-200">{order.payment_mode || "-"}</div>
+	              </div>
+	              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Amounts</div>
+	                <div className="mt-2 text-sm text-slate-200">Total: Rs {formatMoney(order.total_amount)}</div>
+	                <div className="mt-1 text-sm font-semibold text-amber-200">Remaining: Rs {formatMoney(order.remaining_amount)}</div>
+	              </div>
+	            </div>
+
+	            <div className="flex flex-wrap gap-2">
+	              <button
+	                onClick={()=>viewOrder(order.id)}
+	                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+	              >
+	                View
+	              </button>
+
+	              {order.order_status === "SCHEDULED" && (
+	                <button
+	                  onClick={()=>startScheduledOrder(order)}
+	                  className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white"
+	                >
+	                  Start Scheduled Order
+	                </button>
+	              )}
+
+	              {["PROCESSING", "READY"].includes(order.order_status) && (
+	                <button
+	                  onClick={()=>updateOrder(order.id)}
+	                  className="rounded-xl bg-yellow-600 px-4 py-2 text-sm font-semibold text-white"
+	                >
+	                  Update
+	                </button>
+	              )}
+
+	              {["PROCESSING", "SCHEDULED"].includes(order.order_status) && (
+	                <button
+	                  onClick={()=>cancelOrder(order)}
+	                  className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white"
+	                >
+	                  Cancel
+	                </button>
+	              )}
+
+	              {order.order_status === "PROCESSING" && (
+	                <button
+	                  onClick={()=>markOrderReady(order)}
+	                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+	                >
+	                  Ready
+	                </button>
+	              )}
+
+	              {order.order_status === "READY" && (
+	                <button
+	                  onClick={()=>completeOrder(order)}
+	                  className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white"
+	                >
+	                  Complete
+	                </button>
+	              )}
+
+	              {order.payment_status !== "PAID"
+	                && order.order_status !== "CANCELLED"
+	                && !(order.order_status === "COMPLETED")
+	                && (
+	                <button
+	                  onClick={()=>{
+	                    if(!canCollectPayments){
+	                      showCollectDeniedMessage()
+	                      return
+	                    }
+	                    setSelectedOrder(order)
+	                    setCollectAmount(order.remaining_amount || order.total_amount)
+	                    setCollectMethod("CASH")
+	                    setCollectCashAmount("")
+	                    setCollectOnlineAmount("")
+	                    setShowCollectModal(true)
+	                  }}
+	                  className={`rounded-xl px-4 py-2 text-sm font-semibold ${canCollectPayments ? "bg-purple-600 text-white" : "border border-slate-600 bg-slate-700 text-slate-200"}`}
+	                >
+	                  {canCollectPayments ? "Collect" : "Collect (Locked)"}
+	                </button>
+	              )}
+
+	              <button
+	                onClick={()=>printOrder(order.id)}
+	                className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black"
+	              >
+	                Print
+	              </button>
+	            </div>
+	          </div>
+	        </div>
+	      ))
+	    )}
+	  </div>
+	  ) : (
 	  <div className="rounded-3xl border border-slate-800 bg-slate-950/70 overflow-x-auto">
 	    <div className="min-w-[1180px]">
 	    <div className="grid grid-cols-[1.2fr_0.9fr_0.9fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b border-slate-800 bg-slate-900/80 px-4 py-4 text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
@@ -1202,6 +1463,166 @@ async function submitCollectPayment(){
 
 	    </div>
 	  </div>
+	  )}
+	  </>
+	  ) : (
+	  <>
+	  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+	    <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+	      <div className="text-xs uppercase tracking-[0.28em] text-slate-500">External Requests</div>
+	      <div className="mt-2 text-2xl font-semibold">{externalStats.total}</div>
+	    </div>
+	    <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-4">
+	      <div className="text-xs uppercase tracking-[0.28em] text-amber-100/70">Pending</div>
+	      <div className="mt-2 text-2xl font-semibold text-amber-100">{externalStats.pending}</div>
+	    </div>
+	    <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+	      <div className="text-xs uppercase tracking-[0.28em] text-emerald-100/70">Accepted</div>
+	      <div className="mt-2 text-2xl font-semibold text-emerald-100">{externalStats.accepted}</div>
+	    </div>
+	    <div className="rounded-3xl border border-rose-500/20 bg-rose-500/10 p-4">
+	      <div className="text-xs uppercase tracking-[0.28em] text-rose-100/70">Declined</div>
+	      <div className="mt-2 text-2xl font-semibold text-rose-100">{externalStats.declined}</div>
+	    </div>
+	  </div>
+
+	  <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+	    <div className="flex flex-col gap-2 border-b border-slate-800 pb-4 md:flex-row md:items-end md:justify-between">
+	      <div>
+	        <div className="text-lg font-semibold">External Orders Queue</div>
+	        <div className="mt-1 text-sm text-slate-400">
+	          Review accepted, declined, and still-pending external requests without mixing them into the live kitchen flow.
+	        </div>
+	      </div>
+	      <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Decision control</div>
+	    </div>
+
+	    <div className="mt-4 flex flex-wrap items-end gap-3">
+	      <div className="min-w-[260px] flex-1">
+	        <div className="mb-1 text-xs text-slate-400">Search</div>
+	        <input
+	          placeholder="Search order ID, customer, or submitter..."
+	          value={search}
+	          onChange={(e)=>setSearch(e.target.value)}
+	          className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+	        />
+	      </div>
+
+	      <div>
+	        <div className="mb-1 text-xs text-slate-400">Decision Status</div>
+	        <select
+	          value={externalDecisionFilter}
+	          onChange={(e)=>setExternalDecisionFilter(e.target.value)}
+	          className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white"
+	        >
+	          <option value="ALL">All External Orders</option>
+	          <option value="PENDING">Pending</option>
+	          <option value="ACCEPTED">Accepted</option>
+	          <option value="DECLINED">Declined</option>
+	        </select>
+	      </div>
+	    </div>
+	  </div>
+
+	  <div className="space-y-4">
+	    {externalLoading ? (
+	      <div className="rounded-3xl border border-slate-800 bg-slate-950/70 px-5 py-6 text-sm text-slate-400">
+	        Loading external orders...
+	      </div>
+	    ) : filteredExternalOrders.length === 0 ? (
+	      <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
+	        No external orders match the current filter yet.
+	      </div>
+	    ) : (
+	      filteredExternalOrders.map((order) => (
+	        <div key={order.id} className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+	          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+	            <div className="min-w-0">
+	              <div className="flex flex-wrap items-center gap-2">
+	                <div className="text-xl font-semibold text-white">Order #{order.id}</div>
+	                <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${acceptanceBadge(order.acceptance_status)}`}>
+	                  {order.acceptance_status_display || order.acceptance_status}
+	                </span>
+	                <span className="inline-flex rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-200">
+	                  {orderTypeLabel(order.order_type)}
+	                </span>
+	              </div>
+	              <div className="mt-3 grid gap-3 text-sm text-slate-300 md:grid-cols-2 xl:grid-cols-4">
+	                <div>
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Submitted By</div>
+	                  <div className="mt-1 font-medium text-white">{order.submitted_by_name || order.submitted_by_username || "Unknown user"}</div>
+	                </div>
+	                <div>
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Customer</div>
+	                  <div className="mt-1 font-medium text-white">{order.customer_name || "Unnamed customer"}</div>
+	                </div>
+	                <div>
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Created</div>
+	                  <div className="mt-1">{formatDateTime(order.created_at)}</div>
+	                </div>
+	                <div>
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Amount</div>
+	                  <div className="mt-1 font-semibold text-amber-200">Rs {formatMoney(order.total_amount)}</div>
+	                </div>
+	              </div>
+	              <div className="mt-4 grid gap-3 md:grid-cols-2">
+	                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Locator</div>
+	                  <div className="mt-2 text-sm text-slate-200">{orderQuickLocator(order)}</div>
+	                </div>
+	                <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Items</div>
+	                  <div className="mt-2 text-sm text-slate-200">
+	                    {(order.items || []).map((item) => `${item.item_name} x${item.quantity}`).join(", ") || "No items"}
+	                  </div>
+	                </div>
+	              </div>
+	              {order.order_note ? (
+	                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Order Note</div>
+	                  <div className="mt-2">{order.order_note}</div>
+	                </div>
+	              ) : null}
+	              {order.acceptance_decided_by_name ? (
+	                <div className="mt-3 text-xs uppercase tracking-[0.22em] text-slate-500">
+	                  Last decision by {order.acceptance_decided_by_name} on {formatDateTime(order.acceptance_decided_at)}
+	                </div>
+	              ) : null}
+	            </div>
+
+	            <div className="flex flex-wrap gap-2 lg:justify-end">
+	              <button
+	                onClick={() => viewOrder(order.id)}
+	                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+	              >
+	                View
+	              </button>
+	              {allowExternalDecisions && (order.acceptance_status === "PENDING" || order.acceptance_status === "DECLINED") && (
+	                <button
+	                  onClick={() => handleExternalDecision(order.id, "ACCEPT")}
+	                  disabled={externalActionId === order.id}
+	                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+	                >
+	                  {order.acceptance_status === "DECLINED" ? "Accept Again" : "Accept"}
+	                </button>
+	              )}
+	              {allowExternalDecisions && order.acceptance_status === "PENDING" && (
+	                <button
+	                  onClick={() => handleExternalDecision(order.id, "DECLINE")}
+	                  disabled={externalActionId === order.id}
+	                  className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+	                >
+	                  Decline
+	                </button>
+	              )}
+	            </div>
+	          </div>
+	        </div>
+	      ))
+	    )}
+	  </div>
+	  </>
+	  )}
 
 
 {/* VIEW ORDER MODAL */}
@@ -1261,6 +1682,8 @@ icon={(
 <DetailField label="Payment Mode" value={selectedOrder.payment_mode || "-"} />
 <DetailField label="Order Status" value={selectedOrder.order_status} />
 <DetailField label="Payment Status" value={selectedOrder.payment_status} />
+<DetailField label="Submission Source" value={selectedOrder.submission_source_display || selectedOrder.submission_source || "-"} />
+<DetailField label="Acceptance" value={selectedOrder.acceptance_status_display || selectedOrder.acceptance_status || "-"} />
 <DetailField label="Created At" value={formatFullDateTime(selectedOrder.created_at)} />
 <DetailField label="Scheduled For" value={formatFullDateTime(selectedOrder.scheduled_time)} />
 {selectedOrder.order_status === "CANCELLED" && (
@@ -1290,6 +1713,8 @@ icon={(
 <div className="grid gap-3 sm:grid-cols-2">
 <DetailField label="Name" value={selectedOrder.customer_name || "-"} />
 <DetailField label="Phone" value={selectedOrder.customer_phone || "-"} />
+<DetailField label="Submitted By" value={selectedOrder.submitted_by_name || selectedOrder.submitted_by_username || "-"} />
+<DetailField label="Decision By" value={selectedOrder.acceptance_decided_by_name || "-"} />
 <DetailField label="Account" value={selectedOrder.customer_account_name || "-"} className="sm:col-span-2" />
 </div>
 </SectionCard>
@@ -1447,9 +1872,9 @@ Cash ₹{formatMoney(p.cash_amount)} + Online ₹{formatMoney(p.online_amount)}
 
 {showUpdateModal && selectedOrder && (
 
-<div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center">
+<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-60 px-4 py-6">
 
-<div className="bg-gray-900 p-6 rounded-xl w-[600px] max-h-[85vh] overflow-y-auto">
+<div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-gray-900 p-6">
 
 <div className="flex justify-between mb-4">
 
@@ -1698,9 +2123,9 @@ Update Order
 
 {showCollectModal && selectedOrder && (
 
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-<div className="bg-gray-900 p-6 rounded-xl w-[420px]">
+<div className="w-full max-w-md rounded-xl bg-gray-900 p-6">
 
 <div className="flex justify-between mb-4">
 
@@ -1741,7 +2166,7 @@ className="w-full p-2 rounded bg-gray-800"
 </select>
 
 	{collectMethod === "MIXED" && (
-	<div className="grid grid-cols-2 gap-3">
+	<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 
 <input
 type="number"
@@ -1815,9 +2240,9 @@ You don&apos;t have the right to collect payments
 
 {showCompleteModal && selectedOrder && (
 
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-<div className="bg-gray-900 p-6 rounded-xl w-[420px]">
+<div className="w-full max-w-md rounded-xl bg-gray-900 p-6">
 
 <div className="flex justify-between mb-4">
 
@@ -1870,7 +2295,7 @@ return
 }
 
 const res = await fetch(
-`http://localhost:8000/api/orders/${selectedOrder.id}/complete/`,
+buildApiUrl(`orders/${selectedOrder.id}/complete/`),
 {
 method:"POST",
 headers:{ "Content-Type":"application/json" },
@@ -1913,9 +2338,9 @@ Complete Order
 
 {showCancelModal && cancelOrderTarget && (
 
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-<div className="bg-gray-900 p-6 rounded-xl w-[420px] text-white">
+<div className="w-full max-w-md rounded-xl bg-gray-900 p-6 text-white">
 
 <div className="flex justify-between mb-4">
 
@@ -2023,9 +2448,9 @@ Not Cooked
 
 {showLedgerWarning && selectedOrder && (
 
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center">
+<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-  <div className="bg-gray-900 p-6 rounded-xl w-[420px] text-white">
+  <div className="w-full max-w-md rounded-xl bg-gray-900 p-6 text-white">
 
     <h2 className="text-lg font-bold mb-3">
       Unpaid Order
@@ -2065,13 +2490,13 @@ Not Cooked
 
 {showMenuModal && (
 
-<div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 px-4 py-6">
 
-  <div className="bg-gray-900 w-[900px] h-[520px] rounded-xl flex">
+  <div className="flex h-[min(520px,calc(100vh-3rem))] w-full max-w-5xl flex-col rounded-xl bg-gray-900 md:flex-row">
 
     {/* CATEGORIES */}
 
-    <div className="w-[200px] border-r border-gray-800 p-4 overflow-y-auto">
+    <div className="w-full overflow-y-auto border-b border-gray-800 p-4 md:w-[200px] md:border-b-0 md:border-r">
 
       {categories.map(cat => (
 
@@ -2092,7 +2517,7 @@ Not Cooked
 
     {/* MENU ITEMS */}
 
-    <div className="flex-1 p-4 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto p-4">
 
       {products
         .filter(p => p.category === selectedCategory)
@@ -2124,7 +2549,7 @@ Not Cooked
 
     {/* RIGHT PANEL */}
 
-    <div className="w-[220px] border-l border-gray-800 p-4 flex flex-col">
+    <div className="flex w-full flex-col border-t border-gray-800 p-4 md:w-[220px] md:border-l md:border-t-0">
 
       <div className="font-semibold mb-3">
         Items Added
