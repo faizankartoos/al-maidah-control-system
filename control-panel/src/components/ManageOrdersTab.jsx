@@ -645,11 +645,23 @@ export default function ManageOrdersTab({
 
   function printOrder(id){
 
-  fetch(`http://localhost:8000/api/orders/${id}/`)
-    .then(res => res.json())
+  fetch(buildApiUrl(`orders/${id}/`))
+    .then(res => {
+      if (!res.ok) {
+        throw new Error("Failed to load order for printing");
+      }
+      return res.json();
+    })
     .then(order => {
+      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent || "",
+      );
 
       const win = window.open("", "", "width=400,height=600")
+      if (!win) {
+        alert("Unable to open print preview. Please allow pop-ups and try again.");
+        return;
+      }
 
       const createdAt = new Date(order.created_at)
         .toLocaleString("en-GB", {
@@ -815,10 +827,17 @@ export default function ManageOrdersTab({
         setTimeout(() => {
           win.focus()
           win.print()
-          win.close()
-        }, 200)
+          if (!isMobileDevice) {
+            win.onafterprint = () => {
+              win.close()
+            }
+          }
+        }, isMobileDevice ? 500 : 200)
       }
 
+    })
+    .catch(() => {
+      alert("Unable to open the bill right now. Please try again.");
     })
 
   }
