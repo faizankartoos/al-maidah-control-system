@@ -489,94 +489,268 @@ export default function ManageOrdersTab({
   }
 
 
+  // function printOrder(id){
+
+  // fetch(buildApiUrl(`orders/${id}/`))
+  //   .then(res => res.json())
+  //   .then(order => {
+
+  //     const win = window.open("", "", "width=400,height=600")
+
+  //     const createdAt = new Date(order.created_at).toLocaleString("en-GB", {
+  //       day: "2-digit",
+  //       month: "short",
+  //       year: "numeric",
+  //       hour: "2-digit",
+  //       minute: "2-digit",
+  //       hour12: true
+  //     })
+
+  //     win.document.write(`
+  //       <html>
+  //       <head>
+  //         <title>Bill</title>
+  //         <style>
+  //           body {
+  //             font-family: monospace;
+  //             width: 260px;
+  //             margin: auto;
+  //             font-size: 12px;
+  //           }
+
+  //           .center {
+  //             text-align: center;
+  //           }
+
+  //           .bold {
+  //             font-weight: bold;
+  //           }
+
+  //           .row {
+  //             display: flex;
+  //             justify-content: space-between;
+  //           }
+
+  //           .line {
+  //             border-top: 1px dashed #000;
+  //             margin: 6px 0;
+  //           }
+
+  //           .big {
+  //             font-size: 14px;
+  //             font-weight: bold;
+  //           }
+  //         </style>
+          
+
+            
+
+  //         <div class="center bold big">
+  //           YOUR RESTAURANT
+  //         </div>
+
+  //         <div class="center">
+  //           Srinagar
+  //         </div>
+
+  //         <div class="line"></div>
+
+  //         <div class="big">Order: #${order.id}</div>
+  //         <div>${createdAt}</div>
+
+  //         <div>Type: ${order.order_type}</div>
+  //         ${order.order_type === "DINE_IN" && order.table_number ? `
+  //           <div>Table: ${order.table_number}</div>
+  //         ` : ""}
+  //         ${order.order_type === "TAKEAWAY" && order.customer_phone ? `
+  //           <div>Phone: ${order.customer_phone}</div>
+  //         ` : ""}
+  //         ${order.order_type === "DELIVERY" && order.customer_phone ? `
+  //           <div>Phone: ${order.customer_phone}</div>
+  //         ` : ""}
+  //         ${order.order_type === "DELIVERY" && order.delivery_address ? `
+  //           <div>Address: ${order.delivery_address}</div>
+  //         ` : ""}
+
+  //         ${order.order_note ? `
+  //           <div class="line"></div>
+  //           <div class="bold">Order Note</div>
+  //           <div>${order.order_note}</div>
+  //         ` : ""}
+
+  //         <div class="line"></div>
+
+  //         ${order.items.map(i => `
+  //           <div class="row">
+  //             <span>${i.item_name} x${i.quantity}</span>
+  //             <span>${i.total_price}</span>
+  //           </div>
+  //         `).join("")}
+
+  //         <div class="line"></div>
+
+  //         <div class="row">
+  //           <span>Subtotal</span>
+  //           <span>₹${order.subtotal}</span>
+  //         </div>
+
+  //         <div class="row">
+  //           <span>Discount</span>
+  //           <span>₹${order.discount}</span>
+  //         </div>
+
+  //         <div class="row">
+  //           <span>Delivery</span>
+  //           <span>₹${order.delivery_charge}</span>
+  //         </div>
+
+  //         <div class="line"></div>
+
+  //         <div class="row big">
+  //           <span>Total</span>
+  //           <span>₹${order.total_amount}</span>
+  //         </div>
+
+  //         <div class="line"></div>
+
+  //         <div>
+  //           Payment: ${order.payment_status}
+  //         </div>
+
+  //         <div>
+  //           Mode: ${order.payment_mode || "-"}
+  //         </div>
+
+  //         <div class="line"></div>
+
+  //         <div class="center">
+  //           Thank you!
+  //         </div>
+
+  //       </body>
+  //       </html>
+  //     `)
+
+  //     win.document.close()
+  //     win.focus()
+
+  //     setTimeout(()=>{
+  //       win.print()
+  //       win.close()
+  //     }, 300)
+
+  //   })
+
+  // }
+
   function printOrder(id){
 
-  fetch(buildApiUrl(`orders/${id}/`))
+  fetch(`http://localhost:8000/api/orders/${id}/`)
     .then(res => res.json())
     .then(order => {
 
       const win = window.open("", "", "width=400,height=600")
 
-      const createdAt = new Date(order.created_at).toLocaleString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true
-      })
+      const createdAt = new Date(order.created_at)
+        .toLocaleString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: true,
+        })
+        .replace(" am", " AM")
+        .replace(" pm", " PM")
 
       win.document.write(`
-        <html>
-        <head>
+          <!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="UTF-8">
           <title>Bill</title>
           <style>
-            body {
-              font-family: monospace;
-              width: 260px;
-              margin: auto;
-              font-size: 12px;
-            }
+          @page {
+            size: 58mm auto;
+            margin: 0;
+          }
 
-            .center {
-              text-align: center;
-            }
+          body {
+            font-family: monospace;
+            width: 58mm;
+            margin: 0;
+            padding: 4px;
+            font-size: 15px;
+            font-weight: 600;
+          }
 
-            .bold {
-              font-weight: bold;
-            }
+          .center { text-align: center; }
+          .bold { font-weight: 700; }
 
-            .row {
-              display: flex;
-              justify-content: space-between;
-            }
+          .row {
+            display: flex;
+            justify-content: space-between;
+          }
 
-            .line {
-              border-top: 1px dashed #000;
-              margin: 6px 0;
-            }
+          .line {
+            border-top: 1px dashed black;
+            margin: 6px 0;
+          }
 
-            .big {
-              font-size: 14px;
-              font-weight: bold;
-            }
-          </style>
+          .big {
+              font-size: 25px;
+              font-weight: 700;
+          }
+          .title {
+            font-size: 25px;
+            font-weight: 700;
+            white-space: nowrap;
+            text-align: center;
+            word-break: keep-all;
+          }
+            .location {
+            font-size: 15px;
+          }
+        </style>
           
 
             
 
-          <div class="center bold big">
-            YOUR RESTAURANT
+          <div class="center title">
+            Al-Maidah Cafe
           </div>
 
-          <div class="center">
-            Srinagar
+          <div class="center location">
+            Chadoora
           </div>
-
-          <div class="line"></div>
-
-          <div class="big">Order: #${order.id}</div>
-          <div>${createdAt}</div>
-
-          <div>Type: ${order.order_type}</div>
-          ${order.order_type === "DINE_IN" && order.table_number ? `
-            <div>Table: ${order.table_number}</div>
-          ` : ""}
-          ${order.order_type === "TAKEAWAY" && order.customer_phone ? `
-            <div>Phone: ${order.customer_phone}</div>
-          ` : ""}
-          ${order.order_type === "DELIVERY" && order.customer_phone ? `
-            <div>Phone: ${order.customer_phone}</div>
-          ` : ""}
-          ${order.order_type === "DELIVERY" && order.delivery_address ? `
-            <div>Address: ${order.delivery_address}</div>
-          ` : ""}
+          <div class="center location">
+            Phone: 7051333637
+          </div>
+          
+          <div class="center location">${createdAt}</div>
 
           ${order.order_note ? `
             <div class="line"></div>
             <div class="bold">Order Note</div>
             <div>${order.order_note}</div>
           ` : ""}
+
+          <div class="line"></div>
+          
+          <div class="center title">${order.order_type}</div>
+          <div class="center title">Order: ${order.id}</div>
+          ${
+              order.order_type === "DINE_IN" && order.table_number
+                ? `<div>Table: ${order.table_number}</div>`
+                : order.order_type === "TAKEAWAY"
+                ? `<div>Phone: ${order.customer_phone || "-"}</div>`
+                : order.order_type === "DELIVERY"
+                ? `
+                    <div>Phone: ${order.customer_phone || "-"}</div>
+                    <div>Address: ${order.delivery_address || "-"}</div>
+                  `
+                : ""
+            }
 
           <div class="line"></div>
 
@@ -626,7 +800,10 @@ export default function ManageOrdersTab({
           <div class="center">
             Thank you!
           </div>
-
+          <div style="margin-top:10px;">
+          <br/>
+          <br/>
+          <br/>
         </body>
         </html>
       `)
@@ -634,10 +811,13 @@ export default function ManageOrdersTab({
       win.document.close()
       win.focus()
 
-      setTimeout(()=>{
-        win.print()
-        win.close()
-      }, 300)
+      win.onload = () => {
+        setTimeout(() => {
+          win.focus()
+          win.print()
+          win.close()
+        }, 200)
+      }
 
     })
 
@@ -1579,7 +1759,7 @@ async function submitCollectPayment(){
 	              </div>
 	              {order.order_note ? (
 	                <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
-	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Order Note</div>
+	                  <div className="text-xs uppercase tracking-[0.24em] text-slate-500">ORDER NOTE:</div>
 	                  <div className="mt-2">{order.order_note}</div>
 	                </div>
 	              ) : null}
