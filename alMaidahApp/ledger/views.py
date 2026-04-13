@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Q
+from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from django.db import transaction
@@ -15,6 +16,8 @@ from .serializers import AccountSerializer, AccountWriteSerializer
 from .services import record_credit, record_debit
 from .utils import get_cash_drawer
 from orders.models import Order, OrderPayment
+
+ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah"
 
 
 def _sync_customer_collection_to_orders(account, amount, payment_type):
@@ -111,6 +114,80 @@ class AccountDetailAPIView(APIView):
     def get(self, request, account_id):
         account = get_object_or_404(LedgerAccount, id=account_id)
         return Response(account_ledger_report(account.id))
+
+    def patch(self, request, account_id):
+        account = get_object_or_404(LedgerAccount, id=account_id)
+
+        if account.account_type == "CASH":
+            return Response(
+                {"error": "Cash drawer is system-managed and cannot be edited from Ledger."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AccountWriteSerializer(account, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated_account = serializer.save()
+        return Response(AccountSerializer(updated_account).data)
+
+    def delete(self, request, account_id):
+        account = get_object_or_404(LedgerAccount, id=account_id)
+
+        if account.account_type == "CASH":
+            return Response(
+                {"error": "Cash drawer is system-managed and cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "error": "This account cannot be deleted because it is already linked to ledger entries or orders."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AccountQuickDeleteAPIView(APIView):
+
+    @transaction.atomic
+    def post(self, request, account_id):
+        account = get_object_or_404(LedgerAccount, id=account_id)
+        password = str(request.data.get("password") or "")
+
+        if password != ACCOUNT_MANAGEMENT_PASSWORD:
+            return Response(
+                {"error": "Incorrect password. Quick delete is blocked."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if account.account_type == "CASH":
+            return Response(
+                {"error": "Cash drawer is system-managed and cannot be quick deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account_name = account.name
+            account.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    "error": "Quick delete is only allowed for fresh accounts. This account has linked orders or transactions, so its history was kept untouched."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "message": "Ledger account deleted.",
+                "account_name": account_name,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class CustomerLedgerAPIView(APIView):

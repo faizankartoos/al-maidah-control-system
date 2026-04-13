@@ -57,6 +57,8 @@ def account_ledger_report(account_id):
             "payment_status": order.payment_status,
             "customer_name": order.customer_name,
             "customer_phone": order.customer_phone,
+            "delivery_address": order.delivery_address,
+            "table_number": order.table_number,
             "total_amount": order.total_amount,
             "created_at": order.created_at,
         }

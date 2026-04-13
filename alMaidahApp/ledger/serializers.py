@@ -50,9 +50,11 @@ class AccountWriteSerializer(serializers.ModelSerializer):
         if not cleaned:
             raise serializers.ValidationError("Account name is required.")
 
+        account_type = self.initial_data.get("account_type") or getattr(self.instance, "account_type", None)
+
         queryset = LedgerAccount.objects.filter(
             name__iexact=cleaned,
-            account_type=self.initial_data.get("account_type"),
+            account_type=account_type,
         )
 
         if self.instance:
@@ -80,6 +82,11 @@ class AccountWriteSerializer(serializers.ModelSerializer):
         return cleaned
 
     def validate(self, attrs):
+        if self.instance and "account_type" in attrs and attrs["account_type"] != self.instance.account_type:
+            raise serializers.ValidationError(
+                {"account_type": "Account type cannot be changed after creation."}
+            )
+
         account_type = attrs.get("account_type") or getattr(self.instance, "account_type", None)
         contact_number = attrs.get("contact_number", getattr(self.instance, "contact_number", None))
 

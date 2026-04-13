@@ -73,6 +73,51 @@ function orderQuickLocator(order) {
   return order.customer_name || order.customer_phone || "-";
 }
 
+function orderPrimaryHighlight(order) {
+  if (order.order_type === "DINE_IN") {
+    return order.table_number ? `Table ${order.table_number}` : "Table not assigned";
+  }
+
+  if (order.order_type === "TAKEAWAY") {
+    return order.customer_phone ? `Phone ${order.customer_phone}` : "Phone not entered";
+  }
+
+  if (order.order_type === "DELIVERY") {
+    return order.customer_phone ? `Phone ${order.customer_phone}` : "Phone not entered";
+  }
+
+  return order.customer_name || "-";
+}
+
+function orderSecondaryHighlight(order) {
+  if (order.order_type === "DELIVERY") {
+    return order.delivery_address || "Address not entered";
+  }
+
+  if (order.order_type === "DINE_IN") {
+    return order.guest_count ? `${order.guest_count} guests` : "Dine-in order";
+  }
+
+  return order.customer_name || "Customer not entered";
+}
+
+function orderItemsPreview(order) {
+  const items = (order.items || []).filter((item) => item?.item_name);
+
+  if (!items.length) {
+    return "No items added";
+  }
+
+  const preview = items
+    .slice(0, 3)
+    .map((item) => `${item.item_name} x${item.quantity}`)
+    .join(" • ");
+
+  const extraCount = items.length - 3;
+
+  return extraCount > 0 ? `${preview} • +${extraCount} more` : preview;
+}
+
 function formatFullDateTime(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString("en-GB", {
@@ -1412,6 +1457,33 @@ async function submitCollectPayment(){
 	              </span>
 	            </div>
 
+	            <div className="rounded-[28px] border border-sky-500/20 bg-[linear-gradient(135deg,_rgba(14,165,233,0.14),_rgba(15,23,42,0.92))] px-5 py-4 shadow-[0_18px_40px_rgba(14,165,233,0.08)]">
+	              <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-sky-200">
+	                Order Focus
+	              </div>
+	              <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+	                <div className="min-w-0">
+	                  <div className="text-2xl font-semibold leading-tight text-white sm:text-3xl">
+	                    {orderTypeLabel(order.order_type)}
+	                  </div>
+	                  <div className="mt-2 text-xl font-semibold leading-tight text-amber-100 sm:text-2xl">
+	                    {orderPrimaryHighlight(order)}
+	                  </div>
+	                  <div className="mt-2 text-sm text-slate-300 sm:text-base">
+	                    {orderSecondaryHighlight(order)}
+	                  </div>
+	                </div>
+	                <div className="max-w-3xl rounded-2xl border border-slate-800/90 bg-slate-950/45 px-4 py-3 xl:max-w-xl">
+	                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">
+	                    Item Preview
+	                  </div>
+	                  <div className="mt-2 text-base font-semibold leading-7 text-white sm:text-lg">
+	                    {orderItemsPreview(order)}
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+
 	            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
 	              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
 	                <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Locator</div>
@@ -1543,9 +1615,15 @@ async function submitCollectPayment(){
 
 	        <div>
 	          <div className="text-base font-semibold text-white">#{order.id}</div>
-	          <div className="mt-1 text-sm text-slate-300">{orderTypeLabel(order.order_type)}</div>
-	          <div className="mt-1 truncate text-xs text-slate-500" title={orderQuickLocator(order)}>
-	            {orderQuickLocator(order)}
+	          <div className="mt-2 text-lg font-semibold leading-tight text-sky-100">{orderTypeLabel(order.order_type)}</div>
+	          <div className="mt-1 text-base font-semibold leading-tight text-amber-100">
+	            {orderPrimaryHighlight(order)}
+	          </div>
+	          <div className="mt-1 text-sm text-slate-300">
+	            {orderSecondaryHighlight(order)}
+	          </div>
+	          <div className="mt-2 text-sm font-medium leading-6 text-white" title={orderItemsPreview(order)}>
+	            {orderItemsPreview(order)}
 	          </div>
 	          <div className="mt-1 text-xs text-slate-500">
 	            {order.order_status === "SCHEDULED" && order.scheduled_time

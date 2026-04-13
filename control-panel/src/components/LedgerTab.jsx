@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
 
 const today = new Date().toISOString().split("T")[0];
+const ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah";
 
 const ACCOUNT_TYPE_OPTIONS = [
   { value: "CUSTOMER", label: "Customer" },
@@ -21,6 +22,17 @@ const PAYMENT_TYPE_OPTIONS = [
   { value: "ONLINE", label: "Online" },
   { value: "SYSTEM", label: "System" },
 ];
+
+function createEmptyAccountForm() {
+  return {
+    name: "",
+    account_type: "CUSTOMER",
+    contact_number: "",
+    address: "",
+    opening_balance: "0.00",
+    is_active: true,
+  };
+}
 
 function formatCurrency(value) {
   return new Intl.NumberFormat("en-IN", {
@@ -42,6 +54,47 @@ function formatDateTime(value) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatReceiptDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+
+  return new Date(value)
+    .toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(" am", " AM")
+    .replace(" pm", " PM");
+}
+
+function orderTypeLabel(orderType) {
+  if (orderType === "DINE_IN") return "Dine-In";
+  if (orderType === "TAKEAWAY") return "Takeaway";
+  if (orderType === "DELIVERY") return "Delivery";
+  return orderType || "-";
+}
+
+function ledgerOrderHighlight(order) {
+  if (order.order_type === "DINE_IN") {
+    return order.table_number ? `Table ${order.table_number}` : "Dine-In";
+  }
+
+  if (order.order_type === "DELIVERY") {
+    return order.delivery_address || order.customer_phone || "Delivery";
+  }
+
+  if (order.order_type === "TAKEAWAY") {
+    return order.customer_phone || order.customer_name || "Takeaway";
+  }
+
+  return order.customer_name || order.customer_phone || "-";
 }
 
 function getErrorMessage(error, fallback) {
@@ -306,6 +359,138 @@ function CollectModal({
   );
 }
 
+function AccountManagementUnlockModal({
+  open,
+  password,
+  error,
+  onClose,
+  onChange,
+  onSubmit,
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[30px] border border-slate-800 bg-slate-950 p-6 shadow-[0_25px_80px_rgba(0,0,0,0.55)]">
+        <div className="text-[11px] uppercase tracking-[0.34em] text-amber-300">
+          Protected Ledger Controls
+        </div>
+        <h3 className="mt-3 text-2xl font-semibold text-white">Unlock Account Management</h3>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Editing balances and deleting ledger accounts stays locked until the correct password is entered for this browser session.
+        </p>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-4">
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => onChange(event.target.value)}
+              autoFocus
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+              placeholder="Enter ledger management password"
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300"
+            >
+              Unlock
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function QuickDeleteModal({
+  account,
+  password,
+  error,
+  loading,
+  onClose,
+  onChange,
+  onSubmit,
+}) {
+  if (!account) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[30px] border border-rose-500/20 bg-slate-950 p-6 shadow-[0_25px_80px_rgba(0,0,0,0.6)]">
+        <div className="text-[11px] uppercase tracking-[0.34em] text-rose-300">
+          Quick Delete
+        </div>
+        <h3 className="mt-3 text-2xl font-semibold text-white">Delete {account.name}</h3>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          This permanently removes only the ledger account itself. If this account has linked transactions or orders, quick delete will be blocked so history stays untouched.
+        </p>
+
+        <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          Enter the protected management password to continue.
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-4">
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => onChange(event.target.value)}
+              autoFocus
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-rose-400"
+              placeholder="Enter delete password"
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 rounded-2xl bg-rose-500 px-4 py-3 font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading ? "Deleting..." : "Quick Delete"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function AccountDetailModal({ report, onClose, onViewOrder }) {
   const account = report.account;
 
@@ -490,13 +675,17 @@ export default function LedgerTab() {
 
   const [dailyDate, setDailyDate] = useState(today);
 
-  const [accountForm, setAccountForm] = useState({
-    name: "",
-    account_type: "CUSTOMER",
-    contact_number: "",
-    address: "",
-    opening_balance: "0.00",
-    is_active: true,
+  const [accountForm, setAccountForm] = useState(createEmptyAccountForm);
+  const [editingAccount, setEditingAccount] = useState(null);
+  const [accountManagementUnlocked, setAccountManagementUnlocked] = useState(false);
+  const [showAccountManagementUnlock, setShowAccountManagementUnlock] = useState(false);
+  const [accountManagementPassword, setAccountManagementPassword] = useState("");
+  const [accountManagementUnlockError, setAccountManagementUnlockError] = useState("");
+  const [quickDeleteState, setQuickDeleteState] = useState({
+    account: null,
+    password: "",
+    error: "",
+    loading: false,
   });
 
   const [collectState, setCollectState] = useState({
@@ -664,7 +853,37 @@ export default function LedgerTab() {
     { key: "REPORT", label: "Daily Report" },
   ];
 
-  const handleCreateAccount = async () => {
+  const resetAccountEditor = () => {
+    setEditingAccount(null);
+    setAccountForm(createEmptyAccountForm());
+  };
+
+  const requestAccountManagementUnlock = (callback) => {
+    if (accountManagementUnlocked) {
+      callback();
+      return;
+    }
+
+    setShowAccountManagementUnlock(true);
+    setAccountManagementPassword("");
+    setAccountManagementUnlockError("");
+  };
+
+  const handleAccountManagementUnlock = (event) => {
+    event.preventDefault();
+
+    if (accountManagementPassword !== ACCOUNT_MANAGEMENT_PASSWORD) {
+      setAccountManagementUnlockError("Incorrect password. Ledger management stays locked.");
+      return;
+    }
+
+    setAccountManagementUnlocked(true);
+    setShowAccountManagementUnlock(false);
+    setAccountManagementPassword("");
+    setAccountManagementUnlockError("");
+  };
+
+  const handleSubmitAccount = async () => {
     setError("");
     setSuccess("");
 
@@ -676,28 +895,234 @@ export default function LedgerTab() {
     setSavingAccount(true);
 
     try {
-      await api.post("/accounts/", {
+      const payload = {
         ...accountForm,
         contact_number: accountForm.contact_number || null,
         address: accountForm.address || null,
         opening_balance: accountForm.opening_balance || "0.00",
-      });
+      };
 
-      setAccountForm({
-        name: "",
-        account_type: "CUSTOMER",
-        contact_number: "",
-        address: "",
-        opening_balance: "0.00",
-        is_active: true,
-      });
+      if (editingAccount) {
+        await api.patch(`/accounts/${editingAccount.id}/`, payload);
+      } else {
+        await api.post("/accounts/", payload);
+      }
+
+      resetAccountEditor();
 
       await loadAccounts();
-      setSuccess("Ledger account created.");
+      setSuccess(editingAccount ? "Ledger account updated." : "Ledger account created.");
     } catch (requestError) {
-      setError(getErrorMessage(requestError, "Failed to create account."));
+      setError(getErrorMessage(requestError, editingAccount ? "Failed to update account." : "Failed to create account."));
     } finally {
       setSavingAccount(false);
+    }
+  };
+
+  const handleStartEditAccount = (account) => {
+    requestAccountManagementUnlock(() => {
+      setEditingAccount(account);
+      setAccountForm({
+        name: account.name || "",
+        account_type: account.account_type || "CUSTOMER",
+        contact_number: account.contact_number || "",
+        address: account.address || "",
+        opening_balance: String(account.opening_balance ?? "0.00"),
+        is_active: Boolean(account.is_active),
+      });
+      setSuccess("");
+      setError("");
+    });
+  };
+
+  const handleOpenQuickDelete = (account) => {
+    setQuickDeleteState({
+      account,
+      password: "",
+      error: "",
+      loading: false,
+    });
+  };
+
+  const handleConfirmQuickDelete = async (event) => {
+    event.preventDefault();
+
+    if (!quickDeleteState.account) {
+      return;
+    }
+
+    if (!quickDeleteState.password) {
+      setQuickDeleteState((current) => ({
+        ...current,
+        error: "Enter the password to quick delete this account.",
+      }));
+      return;
+    }
+
+    if (quickDeleteState.password !== ACCOUNT_MANAGEMENT_PASSWORD) {
+      setQuickDeleteState((current) => ({
+        ...current,
+        error: "Incorrect password. Quick delete is blocked.",
+      }));
+      return;
+    }
+
+    setQuickDeleteState((current) => ({
+      ...current,
+      loading: true,
+      error: "",
+    }));
+    setError("");
+    setSuccess("");
+
+    try {
+      const response = await api.post(`/accounts/${quickDeleteState.account.id}/quick-delete/`, {
+        password: quickDeleteState.password,
+      });
+
+      if (editingAccount?.id === quickDeleteState.account.id) {
+        resetAccountEditor();
+      }
+
+      if (accountReport?.account?.id === quickDeleteState.account.id) {
+        setAccountReport(null);
+      }
+
+      await refreshAll();
+      setQuickDeleteState({
+        account: null,
+        password: "",
+        error: "",
+        loading: false,
+      });
+      setSuccess(`${response.data.account_name || "Ledger account"} deleted.`);
+    } catch (requestError) {
+      setQuickDeleteState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(requestError, "Quick delete failed."),
+      }));
+    }
+  };
+
+  const handlePrintAccount = async (account) => {
+    setError("");
+
+    try {
+      const response = await api.get(`/accounts/${account.id}/`);
+      const report = response.data;
+      const win = window.open("", "", "width=420,height=640");
+
+      if (!win) {
+        alert("Unable to open print preview. Please allow pop-ups and try again.");
+        return;
+      }
+
+      const linkedOrdersMarkup = (report.related_orders || []).length
+        ? report.related_orders
+            .map(
+              (order) => `
+                <div class="order-line">
+                  ${formatReceiptDateTime(order.created_at)} | ${orderTypeLabel(order.order_type)} | ${ledgerOrderHighlight(order)} | ${formatCurrency(order.total_amount)}
+                </div>
+              `,
+            )
+            .join("")
+        : `
+          <div class="note-line">No linked orders found for this account.</div>
+          <div class="note-line">Balance created on: ${formatReceiptDateTime(report.account.created_at)}</div>
+        `;
+
+      win.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8" />
+          <title>Ledger Account Summary</title>
+          <style>
+            @page {
+              size: 72mm auto;
+              margin: 0;
+            }
+
+            body {
+              font-family: monospace;
+              width: 72mm;
+              margin: 0;
+              padding: 6px;
+              font-size: 13px;
+              font-weight: 600;
+              color: #000;
+            }
+
+            .center { text-align: center; }
+            .title {
+              font-size: 22px;
+              font-weight: 700;
+            }
+            .sub {
+              font-size: 14px;
+            }
+            .section-title {
+              font-size: 14px;
+              font-weight: 700;
+              margin-top: 6px;
+            }
+            .line {
+              border-top: 1px dashed #000;
+              margin: 6px 0;
+            }
+            .account-name {
+              font-size: 18px;
+              font-weight: 700;
+            }
+            .order-line,
+            .note-line {
+              line-height: 1.6;
+              margin-bottom: 6px;
+            }
+            .total {
+              font-size: 18px;
+              font-weight: 700;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="center title">Al-Maidah Cafe</div>
+          <div class="center sub">Chadoora</div>
+          <div class="center sub">Phone: 7051333637</div>
+
+          <div class="line"></div>
+
+          <div class="account-name">${report.account.name}</div>
+          <div>${report.account.account_type_display}</div>
+          <div>${report.account.contact_number || "No phone"}</div>
+          <div>${report.account.address || "No address"}</div>
+
+          <div class="line"></div>
+          <div class="section-title">Linked Order Summary</div>
+          ${linkedOrdersMarkup}
+
+          <div class="line"></div>
+          <div class="section-title">Balance So Far</div>
+          <div class="total">${formatCurrency(report.summary.current_balance)}</div>
+        </body>
+        </html>
+      `);
+
+      win.document.close();
+      win.focus();
+      win.onload = () => {
+        setTimeout(() => {
+          win.focus();
+          win.print();
+          win.onafterprint = () => {
+            win.close();
+          };
+        }, 250);
+      };
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to print this ledger account right now."));
     }
   };
 
@@ -856,12 +1281,49 @@ export default function LedgerTab() {
             <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
               <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-4">
                 <div>
-                  <div className="text-lg font-semibold">Create Account</div>
+                  <div className="text-lg font-semibold">
+                    {editingAccount ? `Edit Account: ${editingAccount.name}` : "Create Account"}
+                  </div>
                   <div className="mt-1 text-sm text-slate-400">
-                    Add customer, delivery, or vendor ledger accounts directly from the panel.
+                    {editingAccount
+                      ? "Correct account details here. Opening balance changes will also shift the live balance."
+                      : "Add customer, delivery, or vendor ledger accounts directly from the panel."}
                   </div>
                 </div>
-                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Setup</div>
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+                      accountManagementUnlocked
+                        ? "bg-emerald-500/15 text-emerald-200"
+                        : "bg-amber-500/15 text-amber-200"
+                    }`}
+                  >
+                    {accountManagementUnlocked ? "Management Unlocked" : "Management Locked"}
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (accountManagementUnlocked) {
+                        setAccountManagementUnlocked(false);
+                        setShowAccountManagementUnlock(false);
+                        setAccountManagementPassword("");
+                        setAccountManagementUnlockError("");
+                        resetAccountEditor();
+                        return;
+                      }
+
+                      setShowAccountManagementUnlock(true);
+                      setAccountManagementPassword("");
+                      setAccountManagementUnlockError("");
+                    }}
+                    className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
+                      accountManagementUnlocked
+                        ? "border border-rose-500/30 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                        : "border border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
+                    }`}
+                  >
+                    {accountManagementUnlocked ? "Lock Controls" : "Unlock Controls"}
+                  </button>
+                </div>
               </div>
 
               <div className="mt-4 grid gap-4">
@@ -876,6 +1338,7 @@ export default function LedgerTab() {
                       }))
                     }
                     className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
+                    disabled={Boolean(editingAccount)}
                   >
                     {ACCOUNT_TYPE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -883,6 +1346,11 @@ export default function LedgerTab() {
                       </option>
                     ))}
                   </select>
+                  {editingAccount ? (
+                    <div className="mt-2 text-xs text-slate-500">
+                      Account type stays locked after creation so existing ledger and order links remain safe.
+                    </div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -933,7 +1401,9 @@ export default function LedgerTab() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm text-slate-300">Opening Balance</label>
+                  <label className="mb-2 block text-sm text-slate-300">
+                    {editingAccount ? "Opening Balance / Balance Correction" : "Opening Balance"}
+                  </label>
                   <input
                     type="number"
                     step="0.01"
@@ -947,15 +1417,37 @@ export default function LedgerTab() {
                     className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
                     placeholder="0.00"
                   />
+                  {editingAccount ? (
+                    <div className="mt-2 text-xs text-slate-500">
+                      Current computed balance updates from this opening balance plus all existing ledger entries.
+                    </div>
+                  ) : null}
                 </div>
 
-                <button
-                  onClick={handleCreateAccount}
-                  disabled={savingAccount}
-                  className="rounded-2xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-sky-500/60"
-                >
-                  {savingAccount ? "Creating..." : "Create Account"}
-                </button>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <button
+                    onClick={handleSubmitAccount}
+                    disabled={savingAccount}
+                    className="flex-1 rounded-2xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-sky-500/60"
+                  >
+                    {savingAccount
+                      ? editingAccount
+                        ? "Saving..."
+                        : "Creating..."
+                      : editingAccount
+                        ? "Save Changes"
+                        : "Create Account"}
+                  </button>
+                  {editingAccount ? (
+                    <button
+                      onClick={resetAccountEditor}
+                      disabled={savingAccount}
+                      className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                    >
+                      Cancel Edit
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
 
@@ -1080,6 +1572,26 @@ export default function LedgerTab() {
                             Collect
                           </button>
                         )}
+                        <button
+                          onClick={() => handlePrintAccount(account)}
+                          className="rounded-2xl border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm font-semibold text-white transition hover:border-slate-500"
+                        >
+                          Print
+                        </button>
+                        <button
+                          onClick={() => handleStartEditAccount(account)}
+                          className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
+                        >
+                          {accountManagementUnlocked ? "Edit" : "Unlock to Edit"}
+                        </button>
+                        {account.account_type !== "CASH" ? (
+                          <button
+                            onClick={() => handleOpenQuickDelete(account)}
+                            className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20"
+                          >
+                            Quick Delete
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1502,6 +2014,37 @@ export default function LedgerTab() {
           {success}
         </div>
       )}
+
+      <AccountManagementUnlockModal
+        open={showAccountManagementUnlock}
+        password={accountManagementPassword}
+        error={accountManagementUnlockError}
+        onClose={() => setShowAccountManagementUnlock(false)}
+        onChange={setAccountManagementPassword}
+        onSubmit={handleAccountManagementUnlock}
+      />
+
+      <QuickDeleteModal
+        account={quickDeleteState.account}
+        password={quickDeleteState.password}
+        error={quickDeleteState.error}
+        loading={quickDeleteState.loading}
+        onClose={() =>
+          setQuickDeleteState({
+            account: null,
+            password: "",
+            error: "",
+            loading: false,
+          })
+        }
+        onChange={(value) =>
+          setQuickDeleteState((current) => ({
+            ...current,
+            password: value,
+          }))
+        }
+        onSubmit={handleConfirmQuickDelete}
+      />
 
       {collectState.account && (
         <CollectModal

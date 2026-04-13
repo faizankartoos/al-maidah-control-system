@@ -7,7 +7,7 @@ from rest_framework.authtoken.models import Token
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.services import record_credit, record_debit
 from ledger.utils import get_cash_drawer
-from orders.models import Order, OrderPayment
+from orders.models import Order, OrderItem, OrderPayment
 
 
 class AuthenticatedLedgerTestCase(TestCase):
@@ -280,6 +280,154 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertEqual(len(data["transactions"]), 2)
         self.assertEqual(Decimal(str(data["summary"]["current_balance"])), Decimal("70.00"))
         self.assertEqual(Decimal(str(data["transactions"][-1]["running_balance"])), Decimal("70.00"))
+
+    def test_can_update_account_details_and_opening_balance(self):
+        customer = LedgerAccount.objects.create(
+            name="Edit Me",
+            account_type="CUSTOMER",
+            contact_number="7000000010",
+            opening_balance=Decimal("20.00"),
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("10.00"),
+            reference="ORDER-9",
+            description="Customer owes restaurant",
+        )
+
+        response = self.client.patch(
+            f"/api/accounts/{customer.id}/",
+            data={
+                "name": "Edited Customer",
+                "opening_balance": "35.00",
+                "address": "Updated Address",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.name, "Edited Customer")
+        self.assertEqual(customer.address, "Updated Address")
+        self.assertEqual(customer.opening_balance, Decimal("35.00"))
+        self.assertEqual(customer.balance, Decimal("45.00"))
+
+    def test_cannot_change_account_type_after_creation(self):
+        customer = LedgerAccount.objects.create(
+            name="Type Locked",
+            account_type="CUSTOMER",
+            contact_number="7000000011",
+        )
+
+        response = self.client.patch(
+            f"/api/accounts/{customer.id}/",
+            data={"account_type": "VENDOR"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be changed", str(response.json()).lower())
+
+    def test_can_delete_fresh_account_without_history(self):
+        vendor = LedgerAccount.objects.create(
+            name="Delete Me",
+            account_type="VENDOR",
+        )
+
+        response = self.client.delete(f"/api/accounts/{vendor.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(LedgerAccount.objects.filter(id=vendor.id).exists())
+
+    def test_cannot_delete_account_with_ledger_history(self):
+        customer = LedgerAccount.objects.create(
+            name="Busy Customer",
+            account_type="CUSTOMER",
+            contact_number="7000000012",
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("25.00"),
+            reference="ORDER-10",
+            description="Customer owes restaurant",
+        )
+
+        response = self.client.delete(f"/api/accounts/{customer.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(LedgerAccount.objects.filter(id=customer.id).exists())
+        self.assertIn("cannot be deleted", response.json()["error"].lower())
+
+    def test_cash_drawer_cannot_be_edited_or_deleted(self):
+        cash = get_cash_drawer()
+
+        edit_response = self.client.patch(
+            f"/api/accounts/{cash.id}/",
+            data={"opening_balance": "10.00"},
+            content_type="application/json",
+        )
+        delete_response = self.client.delete(f"/api/accounts/{cash.id}/")
+
+        self.assertEqual(edit_response.status_code, 400)
+        self.assertEqual(delete_response.status_code, 400)
+
+    def test_quick_delete_requires_correct_password(self):
+        account = LedgerAccount.objects.create(
+            name="Protected Delete",
+            account_type="VENDOR",
+        )
+
+        response = self.client.post(
+            f"/api/accounts/{account.id}/quick-delete/",
+            {"password": "wrong-password"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(LedgerAccount.objects.filter(id=account.id).exists())
+
+    def test_quick_delete_blocks_account_with_linked_orders_and_entries(self):
+        customer = LedgerAccount.objects.create(
+            name="Quick Delete Customer",
+            account_type="CUSTOMER",
+            contact_number="7000000013",
+        )
+
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Quick Delete Customer",
+            customer_phone="7000000013",
+            customer_account=customer,
+            total_amount=Decimal("120.00"),
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Burger",
+            quantity=2,
+            price=Decimal("60.00"),
+            total_price=Decimal("120.00"),
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("120.00"),
+            reference=f"ORDER-{order.id}",
+            description="Customer owes restaurant",
+        )
+
+        response = self.client.post(
+            f"/api/accounts/{customer.id}/quick-delete/",
+            {"password": "admin@almaidah"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(LedgerAccount.objects.filter(id=customer.id).exists())
+        self.assertTrue(Order.objects.filter(id=order.id).exists())
+        self.assertTrue(LedgerEntry.objects.filter(reference=f"ORDER-{order.id}").exists())
 
 
 class LedgerDailyReportTests(AuthenticatedLedgerTestCase):
