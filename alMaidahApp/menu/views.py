@@ -1,5 +1,4 @@
 from django.db.models import Q
-from django.db.models.functions import Lower
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,7 +13,7 @@ def is_truthy(value):
 
 class MenuListCreateAPIView(APIView):
     def get(self, request):
-        menu_items = Menu.objects.all().order_by(Lower("name"), "id")
+        menu_items = Menu.objects.all()
 
         search = request.query_params.get("search", "").strip()
         category = request.query_params.get("category", "").strip()

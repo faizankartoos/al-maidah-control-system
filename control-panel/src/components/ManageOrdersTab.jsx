@@ -118,6 +118,12 @@ function orderItemsPreview(order) {
   return extraCount > 0 ? `${preview} • +${extraCount} more` : preview;
 }
 
+function getSortedCategories(products) {
+  return [...new Set(products.map((product) => product.category))]
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
 function formatFullDateTime(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString("en-GB", {
@@ -362,7 +368,7 @@ export default function ManageOrdersTab({
       .then(res => {
         const data = res.data;
         setProducts(data);
-        const cats = [...new Set(data.map(p => p.category))];
+        const cats = getSortedCategories(data);
         setCategories(cats);
         if (cats.length) setSelectedCategory(cats[0]);
         else setSelectedCategory(null);

@@ -22,6 +22,12 @@ const ORDER_TYPE_META = {
   },
 };
 
+function getSortedCategories(products) {
+  return [...new Set(products.map((product) => product.category))]
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-IN", {
     minimumFractionDigits: 2,
@@ -98,7 +104,7 @@ export default function OrdersTab({ externalMode = false }) {
 
         setProducts(data)
 
-        const cats = [...new Set(data.map(p=>p.category))]
+        const cats = getSortedCategories(data)
         setCategories(cats)
 
         if(cats.length) setSelectedCategory(cats[0])

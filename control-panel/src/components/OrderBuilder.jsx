@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
 
+function getSortedCategories(products) {
+  return [...new Set(products.map((product) => product.category))]
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
 export default function OrderBuilder({
   items,
   setItems,
@@ -22,7 +28,7 @@ export default function OrderBuilder({
 
         setProducts(data);
 
-        const cats = [...new Set(data.map(p => p.category))];
+        const cats = getSortedCategories(data);
         setCategories(cats);
 
         if (cats.length) setSelectedCategory(cats[0]);
