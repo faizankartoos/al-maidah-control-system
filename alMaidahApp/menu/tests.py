@@ -1,6 +1,8 @@
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from .models import Menu
@@ -9,6 +11,13 @@ from .models import Menu
 class MenuAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.user = User.objects.create_superuser(
+            username="menu-admin",
+            password="testpass123",
+            email="menu-admin@example.com",
+        )
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         self.burger = Menu.objects.create(
             name="Chicken Burger",
             category="Burgers",
@@ -68,6 +77,28 @@ class MenuAPITests(TestCase):
         self.assertEqual(search_response.status_code, 200)
         self.assertEqual(len(search_response.data), 1)
         self.assertEqual(search_response.data[0]["name"], "Veg Pizza")
+
+    def test_list_returns_menu_in_case_insensitive_alphabetical_order(self):
+        Menu.objects.create(
+            name="alfaham",
+            category="Grill",
+            price=Decimal("420.00"),
+            is_available=True,
+        )
+        Menu.objects.create(
+            name="Brownie",
+            category="Desserts",
+            price=Decimal("120.00"),
+            is_available=True,
+        )
+
+        response = self.client.get("/api/menu/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["name"] for item in response.data],
+            ["alfaham", "Brownie", "Chicken Burger", "Veg Pizza"],
+        )
 
     def test_patch_updates_menu_item(self):
         response = self.client.patch(
