@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
+import { InlineButtonContent, InlineLoaderLabel } from "./SystemLoader";
 
 const PAYMENT_MODE_OPTIONS = [
   {
@@ -186,7 +187,9 @@ function CategoryModal({
             disabled={loading}
             className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
           >
-            {loading ? "Saving..." : "Save Category"}
+            <InlineButtonContent busy={loading} busyLabel="Saving...">
+              Save Category
+            </InlineButtonContent>
           </button>
           <button
             onClick={onClose}
@@ -708,7 +711,9 @@ export default function ExpensesTab() {
               disabled={savingExpense || activeCategories.length === 0}
               className="rounded-2xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
             >
-              {savingExpense ? "Saving..." : "Save Expense"}
+              <InlineButtonContent busy={savingExpense} busyLabel="Saving...">
+                Save Expense
+              </InlineButtonContent>
             </button>
           </div>
         </div>
@@ -755,7 +760,9 @@ export default function ExpensesTab() {
                 disabled={savingCategory}
                 className="w-full rounded-2xl border border-emerald-500/30 bg-emerald-500/15 px-4 py-3 font-semibold text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {savingCategory ? "Saving..." : "Add Category"}
+                <InlineButtonContent busy={savingCategory} busyLabel="Saving...">
+                  Add Category
+                </InlineButtonContent>
               </button>
             </div>
           </div>
@@ -1008,7 +1015,7 @@ export default function ExpensesTab() {
                   {loadingDashboard ? (
                     <tr>
                       <td colSpan="7" className="py-10 text-center text-slate-500">
-                        Loading expenses...
+                        <InlineLoaderLabel label="Loading expenses..." />
                       </td>
                     </tr>
                   ) : expensesData.expenses.length === 0 ? (

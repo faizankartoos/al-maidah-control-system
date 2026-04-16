@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
+import { InlineButtonContent, PanelLoader } from "./SystemLoader";
 
 
 const today = new Date().toISOString().split("T")[0];
@@ -202,7 +203,9 @@ function ActionButton({ onClick, busy, children }) {
           : "bg-cyan-400 text-slate-950 hover:bg-cyan-300"
       }`}
     >
-      {busy ? "Loading..." : children}
+      <InlineButtonContent busy={busy} busyLabel="Loading...">
+        {children}
+      </InlineButtonContent>
     </button>
   );
 }
@@ -800,16 +803,28 @@ export default function DataTab() {
   const charts = report?.charts || {};
   const rankings = report?.rankings || {};
   const insights = report?.insights || {};
-  const loadingMessage = useMemo(() => {
+  const loadingState = useMemo(() => {
     if (loadingSeconds >= 12) {
-      return "Still building the data intelligence view. If it takes more than about 15 seconds, retry once. The delivery-location grouping is the slowest part on first run.";
+      return {
+        label: "Still building the data intelligence view...",
+        description:
+          "If it takes more than about 15 seconds, retry once. The delivery-location grouping is the slowest part on first run.",
+      };
     }
 
     if (loadingSeconds >= 5) {
-      return "Building the data intelligence view. First runs usually take around 5 to 15 seconds while delivery areas are grouped from live location data.";
+      return {
+        label: "Building the data intelligence view...",
+        description:
+          "First runs usually take around 5 to 15 seconds while delivery areas are grouped from live location data.",
+      };
     }
 
-    return "Building the data intelligence view...";
+    return {
+      label: "Building the data intelligence view...",
+      description:
+        "Pulling order patterns, customer behavior, timing signals, and delivery-area intelligence for this date range.",
+    };
   }, [loadingSeconds]);
 
   const spotlightMetrics = useMemo(
@@ -942,7 +957,11 @@ export default function DataTab() {
       </SectionCard>
 
       {loading ? (
-        <EmptyBlock text={loadingMessage} />
+        <PanelLoader
+          eyebrow="Data Intelligence"
+          label={loadingState.label}
+          description={loadingState.description}
+        />
       ) : (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

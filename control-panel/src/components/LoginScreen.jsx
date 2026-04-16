@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import api, { setAuthToken } from "../services/api";
+import { InlineButtonContent } from "./SystemLoader";
 
 
 function RestaurantMark() {
@@ -148,7 +149,9 @@ export default function LoginScreen({ onAuthenticated }) {
                   disabled={loading}
                   className="w-full rounded-[24px] bg-[linear-gradient(135deg,_#10b981,_#14b8a6)] px-4 py-4 text-base font-semibold text-slate-950 shadow-[0_20px_40px_rgba(16,185,129,0.28)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  {loading ? "Authenticating..." : "Enter Control Panel"}
+                  <InlineButtonContent busy={loading} busyLabel="Authenticating...">
+                    Enter Control Panel
+                  </InlineButtonContent>
                 </button>
               </form>
             </div>

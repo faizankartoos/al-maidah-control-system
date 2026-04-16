@@ -4,6 +4,7 @@ import LoginScreen from "./components/LoginScreen";
 import CustomerDisplay from "./pages/CustomerDisplay";
 import api, { buildApiUrl, clearAuthToken, getAuthToken } from "./services/api";
 import { TAB_DEFINITIONS } from "./constants/tabConfig";
+import { InlineLoaderLabel, ScreenLoader } from "./components/SystemLoader";
 
 
 const isDisplay = window.location.pathname === "/display";
@@ -216,7 +217,7 @@ function AppearanceControls({ user, onPreferenceChange, preferenceSaving, onLogo
 
       {preferenceSaving ? (
         <div className="w-full text-right text-[11px] font-semibold uppercase tracking-[0.26em] text-emerald-300">
-          Saving Preferences
+          <InlineLoaderLabel label="Saving Preferences" className="justify-end gap-2" />
         </div>
       ) : null}
     </div>
@@ -574,11 +575,11 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white">
-        <div className="rounded-[28px] border border-slate-800 bg-slate-900/80 px-8 py-6 text-sm uppercase tracking-[0.34em] text-emerald-300 shadow-[0_25px_70px_rgba(15,23,42,0.35)]">
-          Loading System
-        </div>
-      </div>
+      <ScreenLoader
+        eyebrow="System Boot"
+        label="Loading System"
+        description="Preparing your live restaurant control environment and restoring your last authenticated session."
+      />
     );
   }
 

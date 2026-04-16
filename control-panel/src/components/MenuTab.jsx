@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
+import { PanelLoader } from "./SystemLoader";
 
 function emptyForm() {
   return {
@@ -247,7 +248,14 @@ export default function MenuTab({ currentUser }) {
   };
 
   if (loading) {
-    return <div className={isDayTheme ? "text-slate-600" : "text-gray-300"}>Loading menu dashboard...</div>;
+    return (
+      <PanelLoader
+        eyebrow="Menu"
+        label="Loading menu dashboard..."
+        description="Bringing in categories, pricing, and availability so the menu stays ready for staff."
+        className={isDayTheme ? "text-slate-700" : ""}
+      />
+    );
   }
 
   return (

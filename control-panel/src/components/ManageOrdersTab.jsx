@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api, { buildApiUrl } from "../services/api";
+import { PanelLoader } from "./SystemLoader";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-IN", {
@@ -228,6 +229,7 @@ export default function ManageOrdersTab({
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState(null);
+  const [categorySearch, setCategorySearch] = useState("");
 
   const [updateOrderType, setUpdateOrderType] = useState("");
   const [updateName, setUpdateName] = useState("");
@@ -419,6 +421,14 @@ export default function ManageOrdersTab({
       (order.submitted_by_name || "").toLowerCase().includes(term) ||
       (order.submitted_by_username || "").toLowerCase().includes(term)
     );
+  });
+  const filteredCategories = categories.filter((category) => {
+    const searchTerm = categorySearch.trim().toLowerCase();
+    if (!searchTerm) {
+      return true;
+    }
+
+    return category.toLowerCase().includes(searchTerm);
   });
 
   const dashboardStats = useMemo(() => {
@@ -1809,9 +1819,11 @@ async function submitCollectPayment(){
 
 	  <div className="space-y-4">
 	    {externalLoading ? (
-	      <div className="rounded-3xl border border-slate-800 bg-slate-950/70 px-5 py-6 text-sm text-slate-400">
-	        Loading external orders...
-	      </div>
+	      <PanelLoader
+	        eyebrow="External Queue"
+	        label="Loading external orders..."
+	        description="Checking the latest remote requests waiting for acceptance or review."
+	      />
 	    ) : filteredExternalOrders.length === 0 ? (
 	      <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
 	        No external orders match the current filter yet.
@@ -2781,7 +2793,35 @@ Not Cooked
 
     <div className="w-full overflow-y-auto border-b border-gray-800 p-4 md:w-[200px] md:border-b-0 md:border-r">
 
-      {categories.map(cat => (
+      <div className="relative mb-3">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+        <input
+          placeholder="Search categories..."
+          value={categorySearch}
+          onChange={(e) => setCategorySearch(e.target.value)}
+          className="w-full rounded-lg border border-gray-700 bg-gray-800 py-2 pl-10 pr-3 text-sm text-white outline-none transition"
+        />
+      </div>
+
+      {filteredCategories.length === 0 && (
+        <div className="rounded-lg border border-dashed border-gray-700 px-3 py-6 text-center text-sm text-gray-400">
+          No categories match this search.
+        </div>
+      )}
+
+      {filteredCategories.map(cat => (
 
         <button
           key={cat}

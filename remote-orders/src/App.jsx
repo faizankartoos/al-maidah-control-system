@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import LoginScreen from "../../control-panel/src/components/LoginScreen";
 import CreateOrderTab from "../../control-panel/src/components/CreateOrderTab";
 import ManageOrdersTab from "../../control-panel/src/components/ManageOrdersTab";
+import { ScreenLoader } from "../../control-panel/src/components/SystemLoader";
 import api, { clearAuthToken, getAuthToken } from "../../control-panel/src/services/api";
 
 const ROOT_FONT_SIZES = {
@@ -174,9 +175,11 @@ export default function RemoteOrdersApp() {
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-300">
-        Loading remote desk...
-      </div>
+      <ScreenLoader
+        eyebrow="Remote Access"
+        label="Loading Remote Desk"
+        description="Reconnecting the mobile order desk to your live account and permissions."
+      />
     );
   }
 

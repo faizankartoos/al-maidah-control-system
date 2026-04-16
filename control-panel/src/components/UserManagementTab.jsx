@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
+import { InlineButtonContent, PanelLoader } from "./SystemLoader";
 
 const assignableTabs = [
   { key: "MENU", label: "Menu" },
@@ -287,7 +288,12 @@ function UserModal({ user, onClose, onSave, saving, tabOptions, specialAccessOpt
             disabled={saving}
             className="flex-1 rounded-[22px] bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
           >
-            {saving ? "Saving..." : user ? "Save Changes" : "Create Account"}
+            <InlineButtonContent
+              busy={saving}
+              busyLabel="Saving..."
+            >
+              {user ? "Save Changes" : "Create Account"}
+            </InlineButtonContent>
           </button>
           <button
             onClick={onClose}
@@ -457,9 +463,12 @@ export default function UserManagementTab({ currentUser }) {
         </div>
 
         {loading ? (
-          <div className="mt-5 rounded-[22px] border border-dashed border-slate-700 bg-slate-900/60 px-5 py-10 text-center text-sm text-slate-400">
-            Loading user accounts...
-          </div>
+          <PanelLoader
+            className="mt-5"
+            eyebrow="Access"
+            label="Loading user accounts..."
+            description="Pulling current staff access, roles, and permissions from the live system."
+          />
         ) : users.length ? (
           <div className="mt-5 grid gap-4">
             {users.map((user) => (

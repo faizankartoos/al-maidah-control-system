@@ -69,6 +69,7 @@ export default function OrdersTab({ externalMode = false }) {
   const [products,setProducts] = useState([])
   const [categories,setCategories] = useState([])
   const [selectedCategory,setSelectedCategory] = useState(null)
+  const [categorySearch,setCategorySearch] = useState("")
   const [productSearch,setProductSearch] = useState("")
 
   const [orderItems,setOrderItems] = useState([])
@@ -217,6 +218,11 @@ export default function OrdersTab({ externalMode = false }) {
         p.category.toLowerCase().includes(search)
       )
     })
+  const filteredCategories = categories.filter((category) => {
+    const search = categorySearch.trim().toLowerCase()
+    if(!search) return true
+    return category.toLowerCase().includes(search)
+  })
 
   function resetOrderScreen(){
 
@@ -239,6 +245,7 @@ export default function OrdersTab({ externalMode = false }) {
   setRequireAcceptance(false)
 
   setSelectedDeliveryBoy("")
+  setCategorySearch("")
 
   setOrderItems([])
   setDiscount("")
@@ -888,8 +895,36 @@ Assign Delivery Boy
 	            <div className="text-lg font-semibold">Categories</div>
 	            <div className="mt-1 text-sm text-slate-400">Switch quickly between menu groups.</div>
 
+	            <div className="relative mt-4">
+	              <svg
+	                aria-hidden="true"
+	                viewBox="0 0 24 24"
+	                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+	                fill="none"
+	                stroke="currentColor"
+	                strokeWidth="2"
+	                strokeLinecap="round"
+	                strokeLinejoin="round"
+	              >
+	                <circle cx="11" cy="11" r="7" />
+	                <path d="m20 20-3.5-3.5" />
+	              </svg>
+	              <input
+	                placeholder="Search categories..."
+	                value={categorySearch}
+	                onChange={(e)=>setCategorySearch(e.target.value)}
+	                className="w-full rounded-2xl border border-slate-700 bg-slate-900 py-3 pl-10 pr-4 text-sm text-white outline-none transition"
+	              />
+	            </div>
+
 	            <div className="mt-4 space-y-2">
-	              {categories.map(cat=>(
+	              {filteredCategories.length === 0 && (
+	                <div className="rounded-2xl border border-dashed border-slate-700 px-3 py-6 text-center text-sm text-slate-400">
+	                  No categories match this search.
+	                </div>
+	              )}
+
+	              {filteredCategories.map(cat=>(
 	                <button
 	                  key={cat}
 	                  onClick={()=>setSelectedCategory(cat)}

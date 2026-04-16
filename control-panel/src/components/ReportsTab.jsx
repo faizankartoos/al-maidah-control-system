@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
+import { InlineButtonContent } from "./SystemLoader";
 
 const today = new Date().toISOString().split("T")[0];
 const PROFIT_UNLOCK_PASSWORD = "admin@almaidah";
@@ -1502,7 +1503,9 @@ export default function ReportsTab() {
               disabled={consumptionLoading || productsLoading}
               className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
             >
-              {consumptionLoading ? "Analyzing..." : "Run Analysis"}
+              <InlineButtonContent busy={consumptionLoading} busyLabel="Analyzing...">
+                Run Analysis
+              </InlineButtonContent>
             </button>
           </div>
         </div>
@@ -1785,7 +1788,9 @@ export default function ReportsTab() {
                 disabled={loading}
                 className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
               >
-                {loading ? "Refreshing..." : "Generate Reports"}
+                <InlineButtonContent busy={loading} busyLabel="Refreshing...">
+                  Generate Reports
+                </InlineButtonContent>
               </button>
             </div>
           </div>

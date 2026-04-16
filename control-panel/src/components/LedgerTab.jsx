@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
+import { InlineButtonContent, InlineLoaderLabel, PanelLoader } from "./SystemLoader";
 
 const today = new Date().toISOString().split("T")[0];
 const ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah";
@@ -345,7 +346,9 @@ function CollectModal({
             disabled={loading}
             className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
           >
-            {loading ? "Recording..." : "Confirm Collection"}
+            <InlineButtonContent busy={loading} busyLabel="Recording...">
+              Confirm Collection
+            </InlineButtonContent>
           </button>
           <button
             onClick={onClose}
@@ -482,7 +485,9 @@ function QuickDeleteModal({
               disabled={loading}
               className="flex-1 rounded-2xl bg-rose-500 px-4 py-3 font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? "Deleting..." : "Quick Delete"}
+              <InlineButtonContent busy={loading} busyLabel="Deleting...">
+                Quick Delete
+              </InlineButtonContent>
             </button>
           </div>
         </form>
@@ -1430,13 +1435,12 @@ export default function LedgerTab() {
                     disabled={savingAccount}
                     className="flex-1 rounded-2xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-sky-500/60"
                   >
-                    {savingAccount
-                      ? editingAccount
-                        ? "Saving..."
-                        : "Creating..."
-                      : editingAccount
-                        ? "Save Changes"
-                        : "Create Account"}
+                    <InlineButtonContent
+                      busy={savingAccount}
+                      busyLabel={editingAccount ? "Saving..." : "Creating..."}
+                    >
+                      {editingAccount ? "Save Changes" : "Create Account"}
+                    </InlineButtonContent>
                   </button>
                   {editingAccount ? (
                     <button
@@ -1517,9 +1521,11 @@ export default function LedgerTab() {
 
             <div className="mt-4 space-y-3">
               {loadingAccounts ? (
-                <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
-                  Loading accounts...
-                </div>
+                <PanelLoader
+                  eyebrow="Ledger"
+                  label="Loading accounts..."
+                  description="Pulling balances, linked order states, and current account activity."
+                />
               ) : filteredAccounts.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
                   No accounts match the current filter.
@@ -2078,7 +2084,7 @@ export default function LedgerTab() {
       {loadingAccountReport && !accountReport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
           <div className="rounded-2xl border border-slate-800 bg-slate-950 px-6 py-4 text-sm text-slate-300">
-            Loading account ledger...
+            <InlineLoaderLabel label="Loading account ledger..." />
           </div>
         </div>
       )}

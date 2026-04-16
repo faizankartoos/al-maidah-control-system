@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import api from "../services/api";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { PanelLoader } from "./SystemLoader";
 
 const ACTIVE_BILL_KEY = "inventory_active_bill_id";
 const STOCK_OUT_REASONS = [
@@ -1247,7 +1248,13 @@ export default function InventoryTab() {
   };
 
   if (loading) {
-    return <div className="text-gray-300">Loading inventory dashboard...</div>;
+    return (
+      <PanelLoader
+        eyebrow="Inventory"
+        label="Loading inventory dashboard..."
+        description="Preparing live stock, low-stock alerts, adjustments, and draft bill activity."
+      />
+    );
   }
 
   return (
