@@ -10,6 +10,7 @@ const assignableTabs = [
   { key: "LEDGER", label: "Ledger" },
   { key: "EXPENSES", label: "Expenses" },
   { key: "REPORTS", label: "Reports" },
+  { key: "DATA", label: "Data" },
 ];
 
 const TAB_LABELS = assignableTabs.reduce((acc, tab) => {
@@ -104,7 +105,7 @@ function UserModal({ user, onClose, onSave, saving, tabOptions, specialAccessOpt
       display_name: form.display_name,
       role: form.role,
       is_active: form.is_active,
-      allowed_tabs: form.role === "ADMIN" ? ["MENU", "ORDERS", "MANAGE_ORDERS", "INVENTORY", "LEDGER", "EXPENSES", "REPORTS", "USER_MANAGEMENT"] : form.allowed_tabs,
+      allowed_tabs: form.role === "ADMIN" ? ["MENU", "ORDERS", "MANAGE_ORDERS", "INVENTORY", "LEDGER", "EXPENSES", "REPORTS", "DATA", "USER_MANAGEMENT"] : form.allowed_tabs,
       special_access: form.role === "ADMIN" ? ["COLLECT_PAYMENTS"] : form.special_access,
     };
 

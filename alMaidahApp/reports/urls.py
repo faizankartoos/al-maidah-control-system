@@ -6,10 +6,12 @@ from .views import (
     ExpensesReportAPIView,
     ProfitReportAPIView,
     InventoryConsumptionReportAPIView,
+    DataInsightsReportAPIView,
 )
 
 urlpatterns = [
     path("dashboard/", DashboardReportAPIView.as_view()),
+    path("data-insights/", DataInsightsReportAPIView.as_view()),
     path("sales/", SalesReportAPIView.as_view()),
     path("cogs/", CogsReportAPIView.as_view()),
     path("expenses/", ExpensesReportAPIView.as_view()),

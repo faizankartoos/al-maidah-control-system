@@ -50,6 +50,17 @@ class AccountsAuthTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_staff_cannot_access_data_endpoint_without_permission(self):
+        token = Token.objects.create(user=self.staff)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        response = self.client.get("/api/reports/data-insights/", {
+            "from_date": "2026-03-01",
+            "to_date": "2026-03-30",
+        })
+
+        self.assertEqual(response.status_code, 403)
+
     def test_admin_can_create_staff_account(self):
         token = Token.objects.create(user=self.admin)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")

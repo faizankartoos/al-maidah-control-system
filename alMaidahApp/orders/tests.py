@@ -971,6 +971,79 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(order.customer_account.balance, Decimal("100.00"))
         self.assertEqual(cash_drawer.balance, Decimal("0.00"))
 
+    def test_complete_unpaid_order_does_not_double_customer_balance_after_update(self):
+
+        create_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_LATER",
+                "payment_method": None,
+                "payment_amount": 0,
+                "phone": "9900000605",
+                "name": "Customer",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+
+        order = Order.objects.get(id=create_response.json()["order_id"])
+
+        update_response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "customer_name": "Customer",
+                "customer_phone": "9900000605",
+                "discount": "0.00",
+                "delivery_charge": "0.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+
+        order.refresh_from_db()
+        order.customer_account.refresh_from_db()
+        self.assertEqual(order.customer_account.balance, Decimal("100.00"))
+
+        order.order_status = "READY"
+        order.save(update_fields=["order_status"])
+
+        complete_response = self.client.post(
+            f"/api/orders/{order.id}/complete/",
+            data=json.dumps({
+                "name": "Customer",
+                "phone": "9900000605",
+                "address": "",
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(complete_response.status_code, 200)
+
+        order.refresh_from_db()
+        order.customer_account.refresh_from_db()
+
+        self.assertEqual(order.order_status, "COMPLETED")
+        self.assertEqual(order.payment_status, "UNPAID")
+        self.assertEqual(order.customer_account.balance, Decimal("100.00"))
+        self.assertEqual(
+            LedgerEntry.objects.filter(
+                ledger_account=order.customer_account,
+                reference=f"ORDER-{order.id}",
+                entry_type="CREDIT",
+            ).count(),
+            1,
+        )
+
     def test_collect_delivery_order_clears_delivery_boy_and_updates_cash_drawer(self):
 
         delivery_boy = LedgerAccount.objects.create(

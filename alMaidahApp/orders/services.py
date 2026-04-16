@@ -832,6 +832,7 @@ def settle_delivery_cash(delivery_boy, amount):
 
 def complete_unpaid_order(order, name, phone, address):
 
+    previous_customer_account = order.customer_account
     customer = get_or_create_customer(
         name=name,
         contact_number=phone,
@@ -840,11 +841,23 @@ def complete_unpaid_order(order, name, phone, address):
 
     reference = f"ORDER-{order.id}"
 
-    record_credit(
-        account=customer,
-        amount=order.total_amount,
-        reference=reference,
-        description="Customer owes for order"
+    if previous_customer_account and previous_customer_account != customer:
+        _set_reference_balance(
+            previous_customer_account,
+            reference,
+            Decimal("0.00"),
+            payment_type="SYSTEM",
+            credit_description="Customer balance moved after completion",
+            debit_description="Customer balance cleared after completion"
+        )
+
+    _set_reference_balance(
+        customer,
+        reference,
+        Decimal(str(order.total_amount)),
+        payment_type="SYSTEM",
+        credit_description="Customer balance increased after completion",
+        debit_description="Customer balance reduced after completion"
     )
 
     if order.order_type == "DELIVERY" and order.delivery_boy:

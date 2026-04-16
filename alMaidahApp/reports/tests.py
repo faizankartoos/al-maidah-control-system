@@ -1,5 +1,7 @@
 from decimal import Decimal
 from datetime import timedelta
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -316,3 +318,206 @@ class ReportsDashboardTests(TestCase):
         self.assertEqual(payload["summary"]["stock_out_events_count"], 1)
         self.assertEqual(len(payload["details"]["timeline"]), 2)
         self.assertEqual(payload["details"]["timeline"][0]["event_type"], "STOCK_OUT")
+
+    def test_data_insights_report_returns_customer_location_timing_and_insights(self):
+        repeat_delivery = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Rizwan",
+            customer_phone="7000000001",
+            delivery_address="Bahria Town, Phase 4",
+            total_amount=Decimal("180.00"),
+        )
+        OrderItem.objects.create(
+            order=repeat_delivery,
+            item_name="Loaded Fries",
+            quantity=2,
+            price=Decimal("90.00"),
+        )
+
+        delivery_regular = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Ahsan",
+            customer_phone="7000000009",
+            delivery_address="Bahria Town, Phase 7",
+            total_amount=Decimal("220.00"),
+        )
+        OrderItem.objects.create(
+            order=delivery_regular,
+            item_name="Zinger Burger",
+            quantity=2,
+            price=Decimal("110.00"),
+        )
+
+        response = self.client.get(
+            "/api/reports/data-insights/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["date_range"]["from_date"], self.today.isoformat())
+        self.assertIn("summary", payload)
+        self.assertIn("charts", payload)
+        self.assertIn("rankings", payload)
+        self.assertIn("insights", payload)
+
+        self.assertGreaterEqual(payload["summary"]["total_orders"], 5)
+        self.assertEqual(payload["rankings"]["top_customers"][0]["phone"], "7000000001")
+        self.assertTrue(payload["charts"]["location_hotspots"])
+        self.assertGreaterEqual(payload["charts"]["location_hotspots"][0]["order_count"], 1)
+        self.assertEqual(len(payload["charts"]["hourly_demand"]), 24)
+        self.assertEqual(len(payload["charts"]["weekday_heatmap"]), 7)
+        self.assertTrue(payload["charts"]["customer_favorite_items"])
+        self.assertTrue(payload["insights"]["strengths"])
+        self.assertTrue(payload["insights"]["missing_signals"])
+
+    def test_data_insights_report_uses_requested_timezone_for_hour_buckets(self):
+        local_tz = ZoneInfo("Asia/Kolkata")
+        local_order_date = self.today
+        local_order_time = timezone.datetime(
+            local_order_date.year,
+            local_order_date.month,
+            local_order_date.day,
+            17,
+            30,
+            tzinfo=local_tz,
+        )
+        utc_order_time = local_order_time.astimezone(ZoneInfo("UTC"))
+
+        timezone_order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Timezone Customer",
+            customer_phone="7000000055",
+            total_amount=Decimal("99.00"),
+            completed_at=utc_order_time,
+        )
+        OrderItem.objects.create(
+            order=timezone_order,
+            item_name="Fries",
+            quantity=1,
+            price=Decimal("99.00"),
+        )
+        Order.objects.filter(id=timezone_order.id).update(created_at=utc_order_time)
+
+        response = self.client.get(
+            "/api/reports/data-insights/",
+            {
+                "from_date": local_order_date.isoformat(),
+                "to_date": local_order_date.isoformat(),
+                "timezone": "Asia/Kolkata",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        hour_rows = {row["hour_label"]: row["order_count"] for row in payload["charts"]["hourly_demand"]}
+        self.assertGreaterEqual(hour_rows["5PM"], 1)
+        self.assertEqual(hour_rows["4AM"], 0)
+
+    @patch("reports.services.data_insights._resolve_location_metadata")
+    def test_data_insights_groups_related_delivery_addresses_into_main_area(self, mock_resolve_location_metadata):
+        def fake_group(address):
+            lowered = (address or "").lower()
+            if "chadoora" in lowered:
+                return {
+                    "label": "Chadoora",
+                    "latitude": 33.8905,
+                    "longitude": 74.7743,
+                }
+            if "buchroo" in lowered:
+                return {
+                    "label": "Buchroo",
+                    "latitude": 33.8808,
+                    "longitude": 74.7682,
+                }
+            return None
+
+        mock_resolve_location_metadata.side_effect = fake_group
+
+        first_delivery = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="One",
+            customer_phone="7000000101",
+            delivery_address="Pine Lane Chadoora",
+            total_amount=Decimal("100.00"),
+            completed_at=self.now,
+        )
+        OrderItem.objects.create(
+            order=first_delivery,
+            item_name="Burger",
+            quantity=1,
+            price=Decimal("100.00"),
+        )
+
+        second_delivery = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Two",
+            customer_phone="7000000102",
+            delivery_address="Bridge Chadoora",
+            total_amount=Decimal("120.00"),
+            completed_at=self.now,
+        )
+        OrderItem.objects.create(
+            order=second_delivery,
+            item_name="Pizza",
+            quantity=1,
+            price=Decimal("120.00"),
+        )
+
+        third_delivery = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Three",
+            customer_phone="7000000103",
+            delivery_address="Masjid Buchroo",
+            total_amount=Decimal("90.00"),
+            completed_at=self.now,
+        )
+        OrderItem.objects.create(
+            order=third_delivery,
+            item_name="Fries",
+            quantity=1,
+            price=Decimal("90.00"),
+        )
+
+        response = self.client.get(
+            "/api/reports/data-insights/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+                "timezone": "Asia/Kolkata",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        hotspots = {
+            row["location_label"]: row["order_count"]
+            for row in payload["charts"]["location_hotspots"]
+        }
+        hotspot_orders = {
+            row["location_label"]: row["orders"]
+            for row in payload["charts"]["location_hotspots"]
+        }
+
+        self.assertEqual(hotspots["Chadoora"], 2)
+        self.assertEqual(hotspots["Buchroo"], 1)
+        self.assertEqual(len(hotspot_orders["Chadoora"]), 2)
+        self.assertEqual(hotspot_orders["Buchroo"][0]["highlight"], "Masjid Buchroo")

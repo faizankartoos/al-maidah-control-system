@@ -10,6 +10,7 @@ TAB_PERMISSIONS = (
     ("LEDGER", "Ledger"),
     ("EXPENSES", "Expenses"),
     ("REPORTS", "Reports"),
+    ("DATA", "Data"),
     ("USER_MANAGEMENT", "User Management"),
 )
 

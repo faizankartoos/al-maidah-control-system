@@ -19,6 +19,31 @@ const INVENTORY_DETAIL_TABS = [
   { id: "stock-out-log", label: "Recent Stock Out Log" },
   { id: "history", label: "Inventory History" },
 ];
+const LOW_STOCK_EXPORT_COLUMNS = [
+  { id: "quantity", label: "Present Quantity" },
+  { id: "demandQuantity", label: "Demanded Quantity" },
+  { id: "unit", label: "Unit" },
+  { id: "lowStockThreshold", label: "Alert At" },
+  { id: "shortage", label: "Shortage" },
+  { id: "status", label: "Status" },
+  { id: "averageUnitCost", label: "Avg Unit Cost" },
+  { id: "totalValue", label: "Stock Value" },
+  { id: "lastUpdated", label: "Last Updated" },
+];
+
+function defaultLowStockExportColumns() {
+  return {
+    quantity: true,
+    demandQuantity: false,
+    unit: true,
+    lowStockThreshold: true,
+    shortage: true,
+    status: true,
+    averageUnitCost: false,
+    totalValue: false,
+    lastUpdated: true,
+  };
+}
 
 function getToday() {
   return new Date().toISOString().split("T")[0];
@@ -134,6 +159,12 @@ export default function InventoryTab() {
   const [stockOutLogs, setStockOutLogs] = useState([]);
   const [lowStockItems, setLowStockItems] = useState([]);
   const [lowStockQuantityFilter, setLowStockQuantityFilter] = useState("");
+  const [lowStockExportSearch, setLowStockExportSearch] = useState("");
+  const [selectedLowStockExportItems, setSelectedLowStockExportItems] = useState([]);
+  const [lowStockExportDemandByProductId, setLowStockExportDemandByProductId] = useState({});
+  const [lowStockExportColumns, setLowStockExportColumns] = useState(
+    defaultLowStockExportColumns
+  );
   const [historyData, setHistoryData] = useState({
     summary: {
       total_entries: 0,
@@ -181,14 +212,19 @@ export default function InventoryTab() {
       return lowStockItems;
     }
 
-    const targetQuantity = Number(lowStockQuantityFilter);
+    const maxQuantity = Number(lowStockQuantityFilter);
 
-    if (Number.isNaN(targetQuantity)) {
+    if (Number.isNaN(maxQuantity)) {
       return lowStockItems;
     }
 
-    return lowStockItems.filter((item) => Number(item.quantity) === targetQuantity);
+    return lowStockItems.filter((item) => Number(item.quantity) <= maxQuantity);
   }, [lowStockItems, lowStockQuantityFilter]);
+
+  const lowStockByProductId = useMemo(
+    () => new Map(lowStockItems.map((item) => [String(item.product_id), item])),
+    [lowStockItems]
+  );
 
   const filteredInventory = useMemo(() => {
     const search = inventorySearch.trim().toLowerCase();
@@ -224,6 +260,45 @@ export default function InventoryTab() {
     [inventory]
   );
 
+  const exportCandidateInventoryItems = useMemo(() => {
+    const search = lowStockExportSearch.trim().toLowerCase();
+    const maxQuantity =
+      lowStockQuantityFilter === "" ? null : Number(lowStockQuantityFilter);
+
+    return [...inventory]
+      .filter((item) => {
+        if (maxQuantity !== null && !Number.isNaN(maxQuantity)) {
+          return Number(item.quantity) <= maxQuantity;
+        }
+        return true;
+      })
+      .filter((item) => {
+        if (!search) return true;
+        return item.product_name.toLowerCase().includes(search);
+      })
+      .sort((a, b) => {
+        const quantityDiff = Number(a.quantity) - Number(b.quantity);
+        if (quantityDiff !== 0) return quantityDiff;
+        return a.product_name.localeCompare(b.product_name);
+      });
+  }, [inventory, lowStockExportSearch, lowStockQuantityFilter]);
+
+  const selectedLowStockExportInventoryItems = useMemo(
+    () =>
+      selectedLowStockExportItems
+        .map((productId) => inventoryByProductId.get(String(productId)))
+        .filter(Boolean),
+    [selectedLowStockExportItems, inventoryByProductId]
+  );
+
+  const activeLowStockExportColumns = useMemo(
+    () =>
+      LOW_STOCK_EXPORT_COLUMNS.filter(
+        (column) => lowStockExportColumns[column.id]
+      ),
+    [lowStockExportColumns]
+  );
+
   const selectedAdjustmentInventory = adjustmentForm.product_id
     ? inventoryByProductId.get(adjustmentForm.product_id)
     : null;
@@ -256,6 +331,24 @@ export default function InventoryTab() {
   useEffect(() => {
     loadDashboard();
   }, []);
+
+  useEffect(() => {
+    const validProductIds = new Set(
+      inventory.map((item) => String(item.product))
+    );
+    setSelectedLowStockExportItems((current) =>
+      current.filter((productId) => validProductIds.has(String(productId)))
+    );
+  }, [inventory]);
+
+  useEffect(() => {
+    const validProductIds = new Set(inventory.map((item) => String(item.product)));
+    setLowStockExportDemandByProductId((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([productId]) => validProductIds.has(String(productId)))
+      )
+    );
+  }, [inventory]);
 
   const resetMessages = () => {
     setError("");
@@ -947,8 +1040,13 @@ export default function InventoryTab() {
   const handleExportLowStockPdf = () => {
     resetMessages();
 
-    if (!filteredLowStockItems.length) {
-      setError("No low-stock items available for export with the current filter.");
+    if (!selectedLowStockExportInventoryItems.length) {
+      setError("Select at least one item from the list before exporting the PDF.");
+      return;
+    }
+
+    if (!activeLowStockExportColumns.length) {
+      setError("Choose at least one column to include in the PDF.");
       return;
     }
 
@@ -985,32 +1083,72 @@ export default function InventoryTab() {
     doc.setFontSize(10);
     doc.text(`Generated: ${generatedAt}`, 40, 136);
     doc.text(
-      `Quantity filter: ${lowStockQuantityFilter === "" ? "All alert quantities" : `Current stock = ${lowStockQuantityFilter}`}`,
+      `Quantity range: ${
+        lowStockQuantityFilter === ""
+          ? "All inventory quantities"
+          : `Current stock up to ${lowStockQuantityFilter}`
+      }`,
       40,
       152
     );
-    doc.text(`Total matching items: ${filteredLowStockItems.length}`, 40, 168);
+    doc.text(
+      `Selected items: ${selectedLowStockExportInventoryItems.length} of ${inventory.length}`,
+      40,
+      168
+    );
+
+    if (lowStockExportSearch.trim()) {
+      doc.text(`Item search: ${lowStockExportSearch.trim()}`, 40, 184);
+    }
+
+    const tableStartY = lowStockExportSearch.trim() ? 206 : 190;
 
     autoTable(doc, {
-      startY: 190,
+      startY: tableStartY,
       head: [[
         "Item",
-        "Current Stock",
-        "Unit",
-        "Alert At",
-        "Shortage",
-        "Status",
-        "Last Updated",
+        ...activeLowStockExportColumns.map((column) => column.label),
       ]],
-      body: filteredLowStockItems.map((item) => [
-        item.product_name,
-        String(item.quantity),
-        item.unit,
-        String(item.low_stock_threshold),
-        String(item.shortage_quantity),
-        Number(item.quantity) === 0 ? "Out of Stock" : "Low Stock",
-        item.updated_at ? formatDateTime(item.updated_at) : "-",
-      ]),
+      body: selectedLowStockExportInventoryItems.map((item) => {
+        const shortageQuantity = Math.max(
+          0,
+          Number(item.low_stock_threshold || 0) - Number(item.quantity || 0)
+        );
+        const itemStatus =
+          Number(item.quantity) === 0
+            ? "Out of Stock"
+            : item.is_low_stock
+              ? "Low Stock"
+              : "Healthy";
+
+        return [
+          item.product_name,
+          ...activeLowStockExportColumns.map((column) => {
+            switch (column.id) {
+              case "quantity":
+                return String(item.quantity);
+              case "demandQuantity":
+                return lowStockExportDemandByProductId[String(item.product)] || "-";
+              case "unit":
+                return item.unit;
+              case "lowStockThreshold":
+                return String(item.low_stock_threshold);
+              case "shortage":
+                return String(shortageQuantity);
+              case "status":
+                return itemStatus;
+              case "averageUnitCost":
+                return `Rs ${formatMoney(item.average_unit_cost)}`;
+              case "totalValue":
+                return `Rs ${formatMoney(item.total_value)}`;
+              case "lastUpdated":
+                return item.updated_at ? formatDateTime(item.updated_at) : "-";
+              default:
+                return "-";
+            }
+          }),
+        ];
+      }),
       theme: "grid",
       headStyles: {
         fillColor: [27, 38, 59],
@@ -1031,16 +1169,19 @@ export default function InventoryTab() {
         fillColor: [248, 250, 252],
       },
       didParseCell: (data) => {
-        const row = filteredLowStockItems[data.row.index];
+        const row = selectedLowStockExportInventoryItems[data.row.index];
 
         if (!row || data.section !== "body") return;
 
         if (Number(row.quantity) === 0) {
           data.cell.styles.fillColor = [255, 235, 238];
           data.cell.styles.textColor = [183, 28, 28];
-          if (data.column.index === 5) {
+          if (activeLowStockExportColumns[data.column.index - 1]?.id === "status") {
             data.cell.styles.fontStyle = "bold";
           }
+        } else if (row.is_low_stock) {
+          data.cell.styles.fillColor = [255, 248, 225];
+          data.cell.styles.textColor = [146, 64, 14];
         }
       },
       margin: { left: 40, right: 40, bottom: 48 },
@@ -1060,6 +1201,49 @@ export default function InventoryTab() {
 
     doc.save(`al-maidah-low-stock-alerts-${new Date().toISOString().split("T")[0]}.pdf`);
     setSuccess("Low stock PDF exported successfully.");
+  };
+
+  const toggleLowStockExportItem = (productId) => {
+    setSelectedLowStockExportItems((current) =>
+      current.includes(productId)
+        ? current.filter((itemId) => itemId !== productId)
+        : [...current, productId]
+    );
+  };
+
+  const handleSelectVisibleLowStockExportItems = () => {
+    const visibleIds = exportCandidateInventoryItems.map((item) =>
+      String(item.product)
+    );
+    setSelectedLowStockExportItems((current) => {
+      const merged = new Set([...current, ...visibleIds]);
+      return [...merged];
+    });
+  };
+
+  const handleClearLowStockExportItems = () => {
+    setSelectedLowStockExportItems([]);
+  };
+
+  const toggleLowStockExportColumn = (columnId) => {
+    setLowStockExportColumns((current) => ({
+      ...current,
+      [columnId]: !current[columnId],
+    }));
+  };
+
+  const handleLowStockExportDemandChange = (productId, value) => {
+    setLowStockExportDemandByProductId((current) => ({
+      ...current,
+      [productId]: value,
+    }));
+
+    if (value !== "") {
+      setLowStockExportColumns((current) => ({
+        ...current,
+        demandQuantity: true,
+      }));
+    }
   };
 
   if (loading) {
@@ -1671,22 +1855,19 @@ export default function InventoryTab() {
 
             <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr,1.1fr]">
               <Field
-                label="Filter By Current Quantity"
+                label="Max Current Quantity"
                 value={lowStockQuantityFilter}
                 onChange={setLowStockQuantityFilter}
                 type="number"
-                placeholder="Leave blank for all, enter 0 for out-of-stock only"
+                placeholder="Leave blank for all, enter 1 to include 0 and 1"
               />
               <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
-                <p className="text-sm text-gray-400">Export Filtered Alert List</p>
+                <p className="text-sm text-gray-400">How The Range Works</p>
                 <p className="mt-2 text-sm text-gray-300">
-                  Save the currently visible low-stock list as a branded PDF document for purchasing or record keeping.
+                  Enter `1` to include quantity `0` and `1`. Enter `2` to include quantity `0`, `1`,
+                  and `2`. Leave it blank to keep both the warning list and the export picker open to all
+                  quantities.
                 </p>
-                <div className="mt-4 flex flex-col gap-3 md:flex-row">
-                  <ActionButton onClick={handleExportLowStockPdf} tone="secondary">
-                    Export Low Stock PDF
-                  </ActionButton>
-                </div>
               </div>
             </div>
 
@@ -1753,44 +1934,183 @@ export default function InventoryTab() {
                       </div>
                     ))
                   ) : (
-                    <EmptyState text="No low-stock warnings match this quantity filter." />
+                    <EmptyState text="No low-stock warnings match this quantity range." />
                   )}
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
-                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
-                  Alert Settings
-                </h4>
-                <div className="mt-4 grid gap-4">
-                  <SelectField
-                    label="Item"
-                    value={alertForm.product_id}
-                    onChange={handleAlertProductChange}
-                    options={products.map((product) => ({
-                      value: String(product.id),
-                      label: `${product.name} (${product.unit})`,
-                    }))}
-                    placeholder="Choose item"
-                  />
-                  <Field
-                    label="Warn At Quantity"
-                    value={alertForm.low_stock_threshold}
-                    onChange={(value) =>
-                      setAlertForm((current) => ({
-                        ...current,
-                        low_stock_threshold: value,
-                      }))
-                    }
-                    type="number"
-                    placeholder="0.00"
-                  />
-                  <ActionButton
-                    onClick={handleSaveAlertThreshold}
-                    busy={busyAction === "save-alert-threshold"}
-                  >
-                    Save Alert Level
-                  </ActionButton>
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                    Customize PDF Export
+                  </h4>
+                  <p className="mt-2 text-sm text-gray-300">
+                    Pick items from the full inventory list, decide which columns to show, and export only
+                    the rows you want.
+                  </p>
+
+                  <div className="mt-4 grid gap-4">
+                    <Field
+                      label="Search Items For PDF"
+                      value={lowStockExportSearch}
+                      onChange={setLowStockExportSearch}
+                      placeholder="Search by item name"
+                    />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <SmallButton onClick={handleSelectVisibleLowStockExportItems} tone="secondary">
+                      Select Matching Items
+                    </SmallButton>
+                    <SmallButton onClick={handleClearLowStockExportItems} tone="secondary">
+                      Clear Selection
+                    </SmallButton>
+                  </div>
+
+                  <div className="mt-4">
+                    <p className="text-sm text-gray-400">Choose Columns</p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {LOW_STOCK_EXPORT_COLUMNS.map((column) => (
+                        <label
+                          key={column.id}
+                          className="flex items-center gap-3 rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-3 text-sm text-gray-200"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={Boolean(lowStockExportColumns[column.id])}
+                            onChange={() => toggleLowStockExportColumn(column.id)}
+                            className="h-4 w-4 rounded border-gray-600 bg-gray-950 text-blue-500 focus:ring-blue-500"
+                          />
+                          <span>{column.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm text-gray-400">Choose Items For PDF</p>
+                      <p className="text-xs text-gray-500">
+                        Selected {selectedLowStockExportInventoryItems.length}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-gray-800 bg-gray-950/50 p-3">
+                      {exportCandidateInventoryItems.length ? (
+                        exportCandidateInventoryItems.map((item) => {
+                          const isSelected = selectedLowStockExportItems.includes(
+                            String(item.product)
+                          );
+                          const matchingLowStockItem = lowStockByProductId.get(
+                            String(item.product)
+                          );
+                          const itemStatus =
+                            Number(item.quantity) === 0
+                              ? "Out of Stock"
+                              : item.is_low_stock
+                                ? "Low Stock"
+                                : "Healthy";
+
+                          return (
+                            <div
+                              key={item.product}
+                              className={`flex items-start gap-3 rounded-2xl border px-3 py-3 transition ${
+                                isSelected
+                                  ? "border-blue-500/40 bg-blue-500/10"
+                                  : "border-gray-800 bg-gray-900/50 hover:border-gray-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleLowStockExportItem(String(item.product))}
+                                className="mt-1 h-4 w-4 rounded border-gray-600 bg-gray-950 text-blue-500 focus:ring-blue-500"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-medium text-white">{item.product_name}</p>
+                                  <ToneBadge
+                                    tone={
+                                      Number(item.quantity) === 0
+                                        ? "danger"
+                                        : item.is_low_stock
+                                          ? "warning"
+                                          : "neutral"
+                                    }
+                                  >
+                                    {itemStatus}
+                                  </ToneBadge>
+                                </div>
+                                <p className="mt-1 text-sm text-gray-300">
+                                  {item.quantity} {item.unit} in stock
+                                  {matchingLowStockItem
+                                    ? ` • Alert at ${matchingLowStockItem.low_stock_threshold} ${item.unit}`
+                                    : ` • Alert at ${item.low_stock_threshold} ${item.unit}`}
+                                </p>
+                                <div className="mt-3 max-w-[220px]">
+                                  <Field
+                                    label="Demanded Quantity (Optional)"
+                                    value={
+                                      lowStockExportDemandByProductId[String(item.product)] || ""
+                                    }
+                                    onChange={(value) =>
+                                      handleLowStockExportDemandChange(String(item.product), value)
+                                    }
+                                    type="number"
+                                    placeholder="Example: 5"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <EmptyState text="No inventory items match this search and quantity range." />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                    <ActionButton onClick={handleExportLowStockPdf} tone="secondary">
+                      Export Selected PDF
+                    </ActionButton>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                    Alert Settings
+                  </h4>
+                  <div className="mt-4 grid gap-4">
+                    <SelectField
+                      label="Item"
+                      value={alertForm.product_id}
+                      onChange={handleAlertProductChange}
+                      options={products.map((product) => ({
+                        value: String(product.id),
+                        label: `${product.name} (${product.unit})`,
+                      }))}
+                      placeholder="Choose item"
+                    />
+                    <Field
+                      label="Warn At Quantity"
+                      value={alertForm.low_stock_threshold}
+                      onChange={(value) =>
+                        setAlertForm((current) => ({
+                          ...current,
+                          low_stock_threshold: value,
+                        }))
+                      }
+                      type="number"
+                      placeholder="0.00"
+                    />
+                    <ActionButton
+                      onClick={handleSaveAlertThreshold}
+                      busy={busyAction === "save-alert-threshold"}
+                    >
+                      Save Alert Level
+                    </ActionButton>
+                  </div>
                 </div>
               </div>
             </div>

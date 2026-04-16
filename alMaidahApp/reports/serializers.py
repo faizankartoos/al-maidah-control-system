@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from inventory.models import Product
 
@@ -19,6 +20,21 @@ class InventoryConsumptionRequestSerializer(DateRangeSerializer):
         queryset=Product.objects.all(),
         required=True,
     )
+
+
+class DataInsightsRequestSerializer(DateRangeSerializer):
+    timezone = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_timezone(self, value):
+        if not value:
+            return value
+
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise serializers.ValidationError("Enter a valid timezone.")
+
+        return value
 
 
 class SalesReportSerializer(serializers.Serializer):
@@ -66,3 +82,11 @@ class InventoryConsumptionReportSerializer(serializers.Serializer):
     summary = serializers.DictField()
     charts = serializers.DictField()
     details = serializers.DictField()
+
+
+class DataInsightsReportSerializer(serializers.Serializer):
+    date_range = serializers.DictField()
+    summary = serializers.DictField()
+    charts = serializers.DictField()
+    rankings = serializers.DictField()
+    insights = serializers.DictField()

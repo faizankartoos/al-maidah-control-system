@@ -5,6 +5,7 @@ import InventoryTab from "../components/InventoryTab";
 import LedgerTab from "../components/LedgerTab";
 import ExpensesTab from "../components/ExpensesTab";
 import ReportsTab from "../components/ReportsTab";
+import DataTab from "../components/DataTab";
 import UserManagementTab from "../components/UserManagementTab";
 
 
@@ -43,6 +44,11 @@ export const TAB_DEFINITIONS = [
     key: "REPORTS",
     label: "Reports",
     component: ReportsTab,
+  },
+  {
+    key: "DATA",
+    label: "Data",
+    component: DataTab,
   },
   {
     key: "USER_MANAGEMENT",
