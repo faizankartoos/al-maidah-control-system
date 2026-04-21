@@ -886,13 +886,53 @@ export default function ManageOrdersTab({
 
       win.onload = () => {
         setTimeout(() => {
-          win.focus()
-          win.print()
           if (!isMobileDevice) {
-            win.onafterprint = () => {
-              win.close()
+            let hasClosed = false;
+            let printMediaQuery = null;
+
+            const closePreview = () => {
+              if (hasClosed || win.closed) {
+                return;
+              }
+
+              hasClosed = true;
+
+              if (printMediaQuery) {
+                if (typeof printMediaQuery.removeEventListener === "function") {
+                  printMediaQuery.removeEventListener("change", handlePrintMediaChange);
+                } else if (typeof printMediaQuery.removeListener === "function") {
+                  printMediaQuery.removeListener(handlePrintMediaChange);
+                }
+              }
+
+              window.setTimeout(() => {
+                if (!win.closed) {
+                  win.close();
+                }
+              }, 120);
+            };
+
+            const handlePrintMediaChange = (event) => {
+              if (!event.matches) {
+                closePreview();
+              }
+            };
+
+            win.onafterprint = closePreview;
+
+            if (typeof win.matchMedia === "function") {
+              printMediaQuery = win.matchMedia("print");
+
+              if (typeof printMediaQuery.addEventListener === "function") {
+                printMediaQuery.addEventListener("change", handlePrintMediaChange);
+              } else if (typeof printMediaQuery.addListener === "function") {
+                printMediaQuery.addListener(handlePrintMediaChange);
+              }
             }
           }
+
+          win.focus()
+          win.print()
         }, isMobileDevice ? 500 : 200)
       }
 
