@@ -269,6 +269,47 @@ class InventoryAPITests(TestCase):
         self.assertEqual(self.product.unit, "bag")
         self.assertEqual(self.product.low_stock_threshold, Decimal("5.00"))
 
+    def test_unused_zero_stock_product_can_be_deleted_safely(self):
+        Inventory.objects.create(
+            product=self.product,
+            quantity=Decimal("0.00"),
+            total_value=Decimal("0.00"),
+        )
+
+        response = self.client.delete(f"/api/products/{self.product.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Product.objects.filter(id=self.product.id).exists())
+
+    def test_product_with_purchase_history_cannot_be_deleted(self):
+        bill = self.create_draft_bill()
+        self.add_bill_item(bill)
+
+        response = self.client.delete(f"/api/products/{self.product.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "This item already has bill history, so it cannot be deleted safely.",
+        )
+        self.assertTrue(Product.objects.filter(id=self.product.id).exists())
+
+    def test_product_with_live_stock_cannot_be_deleted(self):
+        Inventory.objects.create(
+            product=self.product,
+            quantity=Decimal("3.00"),
+            total_value=Decimal("150.00"),
+        )
+
+        response = self.client.delete(f"/api/products/{self.product.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "This item still has live stock or value in inventory. Reduce it to zero first.",
+        )
+        self.assertTrue(Product.objects.filter(id=self.product.id).exists())
+
     def test_positive_adjustment_without_cost_requires_unit_cost_for_new_stock(self):
         response = self.client.post(
             "/api/stock-adjustments/",

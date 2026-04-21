@@ -159,7 +159,8 @@ export default function InventoryTab() {
   const [bills, setBills] = useState([]);
   const [stockOutLogs, setStockOutLogs] = useState([]);
   const [lowStockItems, setLowStockItems] = useState([]);
-  const [lowStockQuantityFilter, setLowStockQuantityFilter] = useState("");
+  const [lowStockAlertQuantityFilter, setLowStockAlertQuantityFilter] = useState("");
+  const [lowStockExportQuantityFilter, setLowStockExportQuantityFilter] = useState("");
   const [lowStockExportSearch, setLowStockExportSearch] = useState("");
   const [selectedLowStockExportItems, setSelectedLowStockExportItems] = useState([]);
   const [lowStockExportDemandByProductId, setLowStockExportDemandByProductId] = useState({});
@@ -209,18 +210,18 @@ export default function InventoryTab() {
   );
 
   const filteredLowStockItems = useMemo(() => {
-    if (lowStockQuantityFilter === "") {
+    if (lowStockAlertQuantityFilter === "") {
       return lowStockItems;
     }
 
-    const maxQuantity = Number(lowStockQuantityFilter);
+    const maxQuantity = Number(lowStockAlertQuantityFilter);
 
     if (Number.isNaN(maxQuantity)) {
       return lowStockItems;
     }
 
     return lowStockItems.filter((item) => Number(item.quantity) <= maxQuantity);
-  }, [lowStockItems, lowStockQuantityFilter]);
+  }, [lowStockItems, lowStockAlertQuantityFilter]);
 
   const lowStockByProductId = useMemo(
     () => new Map(lowStockItems.map((item) => [String(item.product_id), item])),
@@ -264,7 +265,7 @@ export default function InventoryTab() {
   const exportCandidateInventoryItems = useMemo(() => {
     const search = lowStockExportSearch.trim().toLowerCase();
     const maxQuantity =
-      lowStockQuantityFilter === "" ? null : Number(lowStockQuantityFilter);
+      lowStockExportQuantityFilter === "" ? null : Number(lowStockExportQuantityFilter);
 
     return [...inventory]
       .filter((item) => {
@@ -282,7 +283,7 @@ export default function InventoryTab() {
         if (quantityDiff !== 0) return quantityDiff;
         return a.product_name.localeCompare(b.product_name);
       });
-  }, [inventory, lowStockExportSearch, lowStockQuantityFilter]);
+  }, [inventory, lowStockExportSearch, lowStockExportQuantityFilter]);
 
   const selectedLowStockExportInventoryItems = useMemo(
     () =>
@@ -540,6 +541,46 @@ export default function InventoryTab() {
           productMode === "edit" ? "Failed to update item." : "Failed to create item."
         )
       );
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    resetMessages();
+
+    if (!selectedProductId) {
+      setError("Choose an existing item first.");
+      return;
+    }
+
+    const product = getProductById(selectedProductId);
+    if (!product) {
+      setError("The selected item could not be found.");
+      return;
+    }
+
+    if (!window.confirm(`Delete ${product.name}? This only works if the item has no stock and no history.`)) {
+      return;
+    }
+
+    try {
+      setBusyAction("delete-product");
+      const response = await api.delete(`/products/${selectedProductId}/`);
+
+      await Promise.all([
+        fetchProducts(),
+        fetchInventory(),
+        fetchBills(),
+        fetchStockOutLogs(),
+        fetchLowStockItems(),
+        fetchHistory(),
+      ]);
+
+      resetProductEditor("create");
+      setSuccess(response.data?.message || `${product.name} deleted safely.`);
+    } catch (err) {
+      setError(extractError(err, "Failed to delete item safely."));
     } finally {
       setBusyAction("");
     }
@@ -1085,9 +1126,9 @@ export default function InventoryTab() {
     doc.text(`Generated: ${generatedAt}`, 40, 136);
     doc.text(
       `Quantity range: ${
-        lowStockQuantityFilter === ""
+        lowStockExportQuantityFilter === ""
           ? "All inventory quantities"
-          : `Current stock up to ${lowStockQuantityFilter}`
+          : `Current stock up to ${lowStockExportQuantityFilter}`
       }`,
       40,
       152
@@ -1351,9 +1392,18 @@ export default function InventoryTab() {
               {productMode === "edit" ? "Save Item Changes" : "Create Item"}
             </ActionButton>
             {productMode === "edit" && (
-              <ActionButton onClick={() => resetProductEditor("create")} tone="secondary">
-                Back To Create
-              </ActionButton>
+              <>
+                <ActionButton
+                  onClick={handleDeleteProduct}
+                  tone="danger"
+                  busy={busyAction === "delete-product"}
+                >
+                  Delete Item Safely
+                </ActionButton>
+                <ActionButton onClick={() => resetProductEditor("create")} tone="secondary">
+                  Back To Create
+                </ActionButton>
+              </>
             )}
           </div>
         </Section>
@@ -1863,8 +1913,8 @@ export default function InventoryTab() {
             <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr,1.1fr]">
               <Field
                 label="Max Current Quantity"
-                value={lowStockQuantityFilter}
-                onChange={setLowStockQuantityFilter}
+                value={lowStockAlertQuantityFilter}
+                onChange={setLowStockAlertQuantityFilter}
                 type="number"
                 placeholder="Leave blank for all, enter 1 to include 0 and 1"
               />
@@ -1872,8 +1922,7 @@ export default function InventoryTab() {
                 <p className="text-sm text-gray-400">How The Range Works</p>
                 <p className="mt-2 text-sm text-gray-300">
                   Enter `1` to include quantity `0` and `1`. Enter `2` to include quantity `0`, `1`,
-                  and `2`. Leave it blank to keep both the warning list and the export picker open to all
-                  quantities.
+                  and `2`. Leave it blank to show every alert item here.
                 </p>
               </div>
             </div>
@@ -1949,19 +1998,26 @@ export default function InventoryTab() {
               <div className="space-y-4">
                 <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
                   <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
-                    Customize PDF Export
+                    Low Stock PDF Builder
                   </h4>
                   <p className="mt-2 text-sm text-gray-300">
-                    Pick items from the full inventory list, decide which columns to show, and export only
-                    the rows you want.
+                    This section is separate from the live warning box. Search the full inventory, filter by
+                    current quantity if you want, choose the rows, choose the columns, and export a cleaner PDF.
                   </p>
 
-                  <div className="mt-4 grid gap-4">
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
                     <Field
                       label="Search Items For PDF"
                       value={lowStockExportSearch}
                       onChange={setLowStockExportSearch}
                       placeholder="Search by item name"
+                    />
+                    <Field
+                      label="PDF Max Current Quantity"
+                      value={lowStockExportQuantityFilter}
+                      onChange={setLowStockExportQuantityFilter}
+                      type="number"
+                      placeholder="Optional separate range for PDF"
                     />
                   </div>
 
@@ -2072,7 +2128,7 @@ export default function InventoryTab() {
                           );
                         })
                       ) : (
-                        <EmptyState text="No inventory items match this search and quantity range." />
+                        <EmptyState text="No inventory items match this PDF search and quantity range." />
                       )}
                     </div>
                   </div>

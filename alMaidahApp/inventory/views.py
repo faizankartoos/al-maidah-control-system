@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Inventory, Product, PurchaseBill, PurchaseItem, StockOutLog
+from .models import Inventory, Product, PurchaseBill, PurchaseItem, StockAdjustmentLog, StockOutLog
 from .serializers import (
     InventorySerializer,
     ProductSerializer,
@@ -52,6 +52,41 @@ class ProductDetailAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, product_id):
+        product = get_object_or_404(Product, id=product_id)
+
+        if PurchaseItem.objects.filter(product=product).exists():
+            return Response(
+                {"error": "This item already has bill history, so it cannot be deleted safely."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if StockOutLog.objects.filter(product=product).exists():
+            return Response(
+                {"error": "This item already has stock-out history, so it cannot be deleted safely."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if StockAdjustmentLog.objects.filter(product=product).exists():
+            return Response(
+                {"error": "This item already has adjustment history, so it cannot be deleted safely."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        inventory = getattr(product, "inventory", None)
+        if inventory and (inventory.quantity > 0 or inventory.total_value > 0):
+            return Response(
+                {"error": "This item still has live stock or value in inventory. Reduce it to zero first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        product_name = product.name
+        product.delete()
+        return Response(
+            {"message": f"{product_name} deleted safely."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class InventoryAPIView(APIView):

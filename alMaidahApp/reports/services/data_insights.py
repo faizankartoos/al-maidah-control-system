@@ -467,7 +467,13 @@ def _build_weekday_heatmap():
 
 def _build_order_highlight(order):
     if order.order_type == "DELIVERY":
-        return (order.delivery_address or order.customer_phone or order.customer_name or "-").strip()
+        return (
+            (order.area.name if getattr(order, "area", None) else "")
+            or order.delivery_address
+            or order.customer_phone
+            or order.customer_name
+            or "-"
+        ).strip()
     if order.order_type == "DINE_IN":
         return f"Table {order.table_number}" if order.table_number else (order.customer_name or "Walk-in")
     return (order.customer_phone or order.customer_name or "Takeaway").strip()
@@ -502,6 +508,7 @@ def _serialize_location_order(order, report_tz):
         "customer_name": (order.customer_name or "").strip(),
         "customer_phone": (order.customer_phone or "").strip(),
         "delivery_address": (order.delivery_address or "").strip(),
+        "area_name": (order.area.name if getattr(order, "area", None) else "").strip(),
         "order_note": (order.order_note or "").strip(),
         "table_number": (order.table_number or "").strip() if order.table_number else "",
         "total_amount": order.total_amount,
@@ -695,6 +702,7 @@ def get_data_insights_report(from_date, to_date, report_timezone=None):
     orders = list(
         Order.objects.filter(created_at__gte=utc_start, created_at__lt=utc_end)
         .exclude(acceptance_status="DECLINED")
+        .select_related("area")
         .prefetch_related("items")
         .order_by("created_at")
     )
@@ -838,7 +846,12 @@ def get_data_insights_report(from_date, to_date, report_timezone=None):
                 item_entry["customers"].add(normalized_phone)
 
         if order.order_type == "DELIVERY":
-            location_meta = _resolve_location_metadata(order.delivery_address)
+            location_lookup_value = (
+                order.area.name.strip()
+                if getattr(order, "area", None) and order.area.name
+                else (order.delivery_address or "").strip()
+            )
+            location_meta = _resolve_location_metadata(location_lookup_value)
             normalized_location = location_meta["label"] if location_meta else None
 
             if order.delivery_address:

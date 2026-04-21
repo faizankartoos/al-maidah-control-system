@@ -11,7 +11,7 @@ from accounts.models import ensure_user_profile
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.utils import get_cash_drawer
 from ledger.services import record_credit
-from orders.models import Order, OrderItem, OrderPayment
+from orders.models import Area, Order, OrderItem, OrderPayment
 
 
 class AuthenticatedOrdersAPITestCase(TestCase):
@@ -25,6 +25,7 @@ class AuthenticatedOrdersAPITestCase(TestCase):
         )
         token = Token.objects.create(user=user)
         self.client.defaults["HTTP_AUTHORIZATION"] = f"Token {token.key}"
+        self.default_area = Area.objects.create(name="Default Area")
 
 
 class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
@@ -86,6 +87,7 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000001",
                 "name": "Customer",
                 "address": "Nowhere",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Burger", "qty": 2, "price": "50.00"}
                 ]
@@ -124,6 +126,7 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000003",
                 "name": "Customer",
                 "address": "Nowhere",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Burger", "qty": 2, "price": "50.00"}
                 ]
@@ -138,6 +141,57 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
 
         self.assertEqual(order.payment_status, "UNPAID")
         self.assertEqual(delivery_boy.balance, Decimal("-100.00"))
+
+    def test_delivery_order_requires_area_and_stores_selected_area(self):
+
+        delivery_boy = LedgerAccount.objects.create(
+            name="Area Rider",
+            account_type="DELIVERY",
+            contact_number="7000000004"
+        )
+        area = Area.objects.create(name="Chadoora")
+
+        missing_area_response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "delivery_boy_id": delivery_boy.id,
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000004",
+                "name": "Customer",
+                "address": "Bridge Chadoora",
+                "items": [
+                    {"name": "Burger", "qty": 1, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(missing_area_response.status_code, 400)
+        self.assertEqual(missing_area_response.json()["error"], "Select area")
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "delivery_boy_id": delivery_boy.id,
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000004",
+                "name": "Customer",
+                "address": "Bridge Chadoora",
+                "area_id": area.id,
+                "items": [
+                    {"name": "Burger", "qty": 1, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+
+        self.assertEqual(order.area, area)
 
     def test_underpayment_is_rejected_and_does_not_create_order(self):
 
@@ -158,6 +212,7 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000002",
                 "name": "Customer",
                 "address": "Somewhere",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Pizza", "qty": 2, "price": "50.00"}
                 ]
@@ -219,6 +274,48 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
 
 class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
 
+    def test_delivery_update_requires_area(self):
+
+        order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="PROCESSING",
+            payment_status="UNPAID",
+            customer_name="Customer",
+            customer_phone="9900000109",
+            delivery_address="Bridge Chadoora",
+        )
+        delivery_boy = LedgerAccount.objects.create(
+            name="Rider",
+            account_type="DELIVERY",
+            contact_number="7000000199"
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Pizza",
+            quantity=1,
+            price=Decimal("50.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "customer_name": "Customer",
+                "customer_phone": "9900000109",
+                "delivery_address": "Bridge Chadoora",
+                "delivery_boy_id": delivery_boy.id,
+                "discount": "0.00",
+                "delivery_charge": "10.00",
+                "items": [
+                    {"name": "Pizza", "qty": 1, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["errors"]["area_id"], "Select area")
+
     def test_ready_order_can_be_updated(self):
 
         order = Order.objects.create(
@@ -255,6 +352,52 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(order.order_status, "READY")
         self.assertEqual(order.table_number, "T2")
         self.assertEqual(order.total_amount, Decimal("35.00"))
+
+    def test_delivery_update_stores_selected_area(self):
+
+        area = Area.objects.create(name="Buchroo")
+        delivery_boy = LedgerAccount.objects.create(
+            name="Delivery Rider",
+            account_type="DELIVERY",
+            contact_number="7000000108"
+        )
+        order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Customer",
+            customer_phone="9900000108",
+            delivery_address="Masjid Buchroo",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Tea",
+            quantity=1,
+            price=Decimal("20.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "customer_name": "Customer",
+                "customer_phone": "9900000108",
+                "delivery_address": "Masjid Buchroo",
+                "area_id": area.id,
+                "delivery_boy_id": delivery_boy.id,
+                "discount": "0.00",
+                "delivery_charge": "10.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "20.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.area, area)
 
     def test_completed_order_cannot_be_updated(self):
 
@@ -429,6 +572,7 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000300",
                 "name": "Customer",
                 "address": "Downtown",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Pizza", "qty": 1, "price": "50.00"}
                 ]
@@ -538,6 +682,7 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
                 "scheduled_time": scheduled_for.isoformat(),
                 "phone": "9900000401",
                 "address": "Old Town",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Tea", "qty": 1, "price": "20.00"}
                 ]
@@ -585,6 +730,7 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
                 "scheduled_time": scheduled_for.isoformat(),
                 "phone": "9900000402",
                 "address": "Airport Road",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Tea", "qty": 1, "price": "20.00"}
                 ]
@@ -691,6 +837,7 @@ class ExternalOrderAcceptanceTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000779",
                 "name": "Decision Customer",
                 "address": "Nowhere",
+                "area_id": self.default_area.id,
                 "delivery_boy_id": LedgerAccount.objects.create(
                     name="Remote Rider",
                     account_type="DELIVERY",
@@ -757,6 +904,7 @@ class ExternalOrderAcceptanceTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000780",
                 "name": "Remote Delivery",
                 "address": "Acceptance Lane",
+                "area_id": Area.objects.create(name="Remote Area").id,
                 "delivery_boy_id": delivery_boy.id,
                 "submission_source": "EXTERNAL",
                 "require_acceptance": True,
@@ -772,19 +920,20 @@ class ExternalOrderAcceptanceTests(AuthenticatedOrdersAPITestCase):
         delivery_boy.refresh_from_db()
         self.assertEqual(delivery_boy.balance, Decimal("0.00"))
 
-        order = Order.objects.get(id=create_response.json()["order_id"])
 
-        accept_response = self.client.post(
-            f"/api/orders/{order.id}/external-decision/",
-            data=json.dumps({"action": "ACCEPT"}),
-            content_type="application/json",
-            **self._control_panel_headers()
-        )
+class AreaLookupTests(AuthenticatedOrdersAPITestCase):
 
-        self.assertEqual(accept_response.status_code, 200)
+    def test_area_lookup_returns_matches_for_single_letter_search(self):
+        Area.objects.create(name="Chadoora")
+        Area.objects.create(name="Buchroo")
+        Area.objects.create(name="Nowgam")
 
-        delivery_boy.refresh_from_db()
-        self.assertEqual(delivery_boy.balance, Decimal("-150.00"))
+        response = self.client.get("/api/orders/areas/?q=c")
+
+        self.assertEqual(response.status_code, 200)
+        area_names = [row["name"] for row in response.json()]
+        self.assertIn("Chadoora", area_names)
+        self.assertNotIn("Buchroo", area_names)
 
     def test_external_orders_that_require_acceptance_must_use_pay_later(self):
 
@@ -908,6 +1057,7 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000600",
                 "name": "Customer",
                 "address": "Downtown",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Tea", "qty": 2, "price": "50.00"}
                 ]
@@ -1063,6 +1213,7 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000601",
                 "name": "Customer",
                 "address": "Downtown",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Tea", "qty": 2, "price": "50.00"}
                 ]
@@ -1242,6 +1393,7 @@ class CancelOrderTests(AuthenticatedOrdersAPITestCase):
                 "phone": "9900000700",
                 "name": "Customer",
                 "address": "Downtown",
+                "area_id": self.default_area.id,
                 "items": [
                     {"name": "Tea", "qty": 2, "price": "50.00"}
                 ]

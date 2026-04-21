@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Order, OrderItem, OrderPayment
+from .models import Area, Order, OrderItem, OrderPayment
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -14,6 +14,12 @@ class OrderPaymentSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class AreaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Area
+        fields = ["id", "name"]
+
+
 class OrderSerializer(serializers.ModelSerializer):
 
     items = OrderItemSerializer(many=True, read_only=True)
@@ -22,6 +28,7 @@ class OrderSerializer(serializers.ModelSerializer):
     customer_account_name = serializers.SerializerMethodField()
     delivery_boy_name = serializers.SerializerMethodField()
     payment_mode = serializers.SerializerMethodField()
+    area_name = serializers.SerializerMethodField()
     acceptance_status_display = serializers.SerializerMethodField()
     submission_source_display = serializers.SerializerMethodField()
     submitted_by_name = serializers.SerializerMethodField()
@@ -42,6 +49,8 @@ class OrderSerializer(serializers.ModelSerializer):
             "customer_name",
             "customer_phone",
             "delivery_address",
+            "area",
+            "area_name",
             "order_note",
             "table_number",
             "scheduled_time",
@@ -84,6 +93,11 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_payment_mode(self, obj):
         if obj.payments.exists():
             return obj.payments.last().payment_type
+        return None
+
+    def get_area_name(self, obj):
+        if obj.area:
+            return obj.area.name
         return None
 
     def get_acceptance_status_display(self, obj):

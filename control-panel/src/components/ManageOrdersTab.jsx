@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import api, { buildApiUrl } from "../services/api";
 import { PanelLoader } from "./SystemLoader";
+import AreaAutocomplete from "./AreaAutocomplete";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-IN", {
@@ -51,7 +52,7 @@ function orderTypeLabel(orderType) {
 
 function orderQuickLocator(order) {
   if (order.order_type === "DELIVERY") {
-    return order.delivery_address || order.customer_phone || "No delivery address";
+    return order.area_name || order.delivery_address || order.customer_phone || "No delivery address";
   }
 
   if (order.order_type === "TAKEAWAY") {
@@ -92,7 +93,11 @@ function orderPrimaryHighlight(order) {
 
 function orderSecondaryHighlight(order) {
   if (order.order_type === "DELIVERY") {
-    return order.delivery_address || "Address not entered";
+    if (order.area_name && order.delivery_address) {
+      return `${order.area_name} • ${order.delivery_address}`;
+    }
+
+    return order.area_name || order.delivery_address || "Address not entered";
   }
 
   if (order.order_type === "DINE_IN") {
@@ -235,6 +240,8 @@ export default function ManageOrdersTab({
   const [updateName, setUpdateName] = useState("");
   const [updatePhone, setUpdatePhone] = useState("");
   const [updateAddress, setUpdateAddress] = useState("");
+  const [updateAreaId, setUpdateAreaId] = useState("");
+  const [updateAreaName, setUpdateAreaName] = useState("");
   const [updateDeliveryBoyId, setUpdateDeliveryBoyId] = useState("");
   const [updateTable, setUpdateTable] = useState("");
   const [updateOrderNote, setUpdateOrderNote] = useState("");
@@ -478,6 +485,8 @@ export default function ManageOrdersTab({
       setUpdateName("");
       setUpdatePhone("");
       setUpdateAddress("");
+      setUpdateAreaId("");
+      setUpdateAreaName("");
       setUpdateDeliveryBoyId("");
       setUpdateDeliveryCharge(0);
       return;
@@ -487,6 +496,8 @@ export default function ManageOrdersTab({
 
     if (nextOrderType === "TAKEAWAY") {
       setUpdateAddress("");
+      setUpdateAreaId("");
+      setUpdateAreaName("");
       setUpdateDeliveryBoyId("");
       setUpdateDeliveryCharge(0);
     }
@@ -506,6 +517,10 @@ export default function ManageOrdersTab({
     if (updateOrderType === "DELIVERY") {
       if (!updatePhone.trim()) {
         errors.customer_phone = "Enter phone number";
+      }
+
+      if (!updateAreaId) {
+        errors.area_id = "Select area";
       }
 
       if (!updateAddress.trim()) {
@@ -819,6 +834,7 @@ export default function ManageOrdersTab({
                 ? `<div>Phone: ${order.customer_phone || "-"}</div>`
                 : order.order_type === "DELIVERY"
                 ? `
+                    <div>Area: ${order.area_name || "-"}</div>
                     <div>Phone: ${order.customer_phone || "-"}</div>
                     <div>Address: ${order.delivery_address || "-"}</div>
                   `
@@ -968,6 +984,8 @@ export default function ManageOrdersTab({
         setUpdateName(data.customer_name || "");
         setUpdatePhone(data.customer_phone || "");
         setUpdateAddress(data.delivery_address || "");
+        setUpdateAreaId(data.area ? String(data.area) : "");
+        setUpdateAreaName(data.area_name || "");
         setUpdateDeliveryBoyId(data.delivery_boy || "");
         setUpdateOrderNote(data.order_note || "");
         setUpdateTable(data.table_number || "");
@@ -1071,6 +1089,7 @@ export default function ManageOrdersTab({
       customer_name: updateOrderType === "DINE_IN" ? null : updateName.trim() || null,
       customer_phone: updateOrderType === "DINE_IN" ? null : updatePhone.trim() || null,
       delivery_address: updateOrderType === "DELIVERY" ? updateAddress.trim() || null : null,
+      area_id: updateOrderType === "DELIVERY" ? updateAreaId || null : null,
       delivery_boy_id: updateOrderType === "DELIVERY" ? updateDeliveryBoyId || null : null,
       order_note: updateOrderNote.trim() || null,
       table_number: updateOrderType === "DINE_IN" ? updateTable.trim() || null : null,
@@ -2048,6 +2067,7 @@ icon={(
 <div className="grid gap-3 sm:grid-cols-2">
 <DetailField label="Name" value={selectedOrder.customer_name || "-"} />
 <DetailField label="Phone" value={selectedOrder.customer_phone || "-"} />
+<DetailField label="Area" value={selectedOrder.area_name || "-"} />
 <DetailField label="Submitted By" value={selectedOrder.submitted_by_name || selectedOrder.submitted_by_username || "-"} />
 <DetailField label="Decision By" value={selectedOrder.acceptance_decided_by_name || "-"} />
 <DetailField label="Account" value={selectedOrder.customer_account_name || "-"} className="sm:col-span-2" />
@@ -2319,6 +2339,28 @@ className={inputStyle}
 {updateErrors.delivery_boy_id && (
 <div className="mt-1 text-xs text-red-400">{updateErrors.delivery_boy_id}</div>
 )}
+</div>
+
+<div>
+<AreaAutocomplete
+label="Area"
+selectedAreaId={updateAreaId}
+selectedAreaName={updateAreaName}
+onSelectArea={(area)=>{
+setUpdateAreaId(String(area.id))
+setUpdateAreaName(area.name)
+clearUpdateError("area_id")
+setUpdateFormError("")
+}}
+onClearArea={()=>{
+setUpdateAreaId("")
+setUpdateAreaName("")
+clearUpdateError("area_id")
+setUpdateFormError("")
+}}
+error={updateErrors.area_id}
+helperText="Pick the saved delivery area, then keep the detailed address below."
+/>
 </div>
 
 <div>

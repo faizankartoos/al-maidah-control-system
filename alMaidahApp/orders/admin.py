@@ -2,7 +2,13 @@ from django.contrib import admin
 
 # Register your models here.
 from django.contrib import admin
-from .models import Order, OrderItem, OrderPayment
+from .models import Area, Order, OrderItem, OrderPayment
+
+
+@admin.register(Area)
+class AreaAdmin(admin.ModelAdmin):
+    list_display = ("name", "created_at")
+    search_fields = ("name", "normalized_name")
 
 
 class OrderItemInline(admin.TabularInline):
@@ -30,6 +36,7 @@ class OrderAdmin(admin.ModelAdmin):
         "order_type",
         "order_status",
         "payment_status",
+        "area",
         "total_amount",
         "created_at",
         "scheduled_time",

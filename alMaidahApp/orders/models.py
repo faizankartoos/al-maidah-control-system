@@ -1,8 +1,32 @@
+import re
+
 from django.db import models
 from django.db.models import Sum
 from django.contrib.auth.models import User
 from ledger.models import LedgerAccount
 from decimal import Decimal
+
+
+def normalize_area_name(value):
+    cleaned = re.sub(r"\s+", " ", (value or "").strip())
+    return cleaned.lower()
+
+
+class Area(models.Model):
+    name = models.CharField(max_length=120, unique=True)
+    normalized_name = models.CharField(max_length=120, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def save(self, *args, **kwargs):
+        self.name = re.sub(r"\s+", " ", (self.name or "").strip())
+        self.normalized_name = normalize_area_name(self.name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
 
 class Order(models.Model):
 
@@ -81,6 +105,14 @@ class Order(models.Model):
     delivery_address = models.TextField(
         blank=True,
         null=True
+    )
+
+    area = models.ForeignKey(
+        Area,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="orders",
     )
 
     order_note = models.TextField(

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import api, { buildApiUrl } from "../services/api";
+import AreaAutocomplete from "./AreaAutocomplete";
 
 const ORDER_TYPE_META = {
   DINE_IN: {
@@ -58,6 +59,8 @@ export default function OrdersTab({ externalMode = false }) {
   const [phone,setPhone] = useState("")
   const [name,setName] = useState("")
   const [address,setAddress] = useState("")
+  const [selectedAreaId, setSelectedAreaId] = useState("")
+  const [selectedAreaName, setSelectedAreaName] = useState("")
   const [orderNote,setOrderNote] = useState("")
   const [requireAcceptance, setRequireAcceptance] = useState(false)
 
@@ -241,6 +244,8 @@ export default function OrdersTab({ externalMode = false }) {
   setPhone("")
   setName("")
   setAddress("")
+  setSelectedAreaId("")
+  setSelectedAreaName("")
   setOrderNote("")
   setRequireAcceptance(false)
 
@@ -290,6 +295,7 @@ export default function OrdersTab({ externalMode = false }) {
       phone:phone,
       name:name,
       address:address,
+      area_id: orderType === "DELIVERY" ? selectedAreaId || null : null,
       order_note: orderNote.trim() || null,
 
       discount:discount,
@@ -633,17 +639,34 @@ Assign Delivery Boy
 	              )}
 
 	              {orderType==="DELIVERY" && (
-	                <div className="md:col-span-2">
-	                  <label className="mb-2 block text-sm font-medium text-slate-300">
-	                    Delivery Address
-	                  </label>
-	                  <textarea
-	                    placeholder="Enter full delivery address"
-	                    value={address}
-	                    onChange={e=>setAddress(e.target.value)}
-	                    className={`${inputStyle} min-h-[110px] resize-none`}
-	                  />
-	                </div>
+	                <>
+	                  <div className="md:col-span-2">
+	                    <AreaAutocomplete
+	                      selectedAreaId={selectedAreaId}
+	                      selectedAreaName={selectedAreaName}
+	                      onSelectArea={(area) => {
+	                        setSelectedAreaId(String(area.id))
+	                        setSelectedAreaName(area.name)
+	                      }}
+	                      onClearArea={() => {
+	                        setSelectedAreaId("")
+	                        setSelectedAreaName("")
+	                      }}
+	                      helperText="This is the standard delivery zone. After selecting it, write the exact house, lane, or landmark below."
+	                    />
+	                  </div>
+	                  <div className="md:col-span-2">
+	                    <label className="mb-2 block text-sm font-medium text-slate-300">
+	                      Delivery Address
+	                    </label>
+	                    <textarea
+	                      placeholder="Enter full delivery address"
+	                      value={address}
+	                      onChange={e=>setAddress(e.target.value)}
+	                      className={`${inputStyle} min-h-[110px] resize-none`}
+	                    />
+	                  </div>
+	                </>
 	              )}
 	            </div>
 	          </div>
@@ -776,8 +799,8 @@ Assign Delivery Boy
 
   if(orderType === "DELIVERY"){
 
-    if(!phone || !address){
-      showToast("Phone and address required for delivery order","warning")
+    if(!phone || !address || !selectedAreaId){
+      showToast("Phone, area, and address required for delivery order","warning")
       return false
     }
 
@@ -869,7 +892,7 @@ Assign Delivery Boy
 	              {orderType === "DINE_IN"
 	                ? (useCustomTable ? customTable : tableNumber) || "No table selected"
 	                : orderType === "DELIVERY"
-	                  ? (address || "Address pending")
+	                  ? (selectedAreaName ? `${selectedAreaName} • ${address || "Address pending"}` : (address || "Area and address pending"))
 	                  : "Counter pickup"}
 	            </div>
 	          </div>

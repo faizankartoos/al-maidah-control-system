@@ -10,7 +10,7 @@ from .services import (
     sync_external_order_acceptance,
     update_order_details,
 )
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db import transaction
 
 
@@ -25,8 +25,8 @@ from decimal import Decimal, InvalidOperation
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 
-from .models import Order, OrderItem, OrderPayment
-from .serializers import OrderSerializer
+from .models import Area, Order, OrderItem, OrderPayment, normalize_area_name
+from .serializers import AreaSerializer, OrderSerializer
 from ledger.models import LedgerAccount
 
 
@@ -91,6 +91,8 @@ def _serialize_external_order(order):
         "customer_name": order.customer_name,
         "customer_phone": order.customer_phone,
         "delivery_address": order.delivery_address,
+        "area": order.area_id,
+        "area_name": order.area.name if order.area else None,
         "order_note": order.order_note,
         "table_number": order.table_number,
         "scheduled_time": order.scheduled_time,
@@ -124,15 +126,31 @@ class OrderListAPIView(ListAPIView):
 
     queryset = Order.objects.filter(
         acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES
-    ).order_by("-created_at")
+    ).select_related("area").order_by("-created_at")
     serializer_class = OrderSerializer
 
 
 
 class OrderDetailAPIView(RetrieveAPIView):
 
-    queryset = Order.objects.all()
+    queryset = Order.objects.select_related("area").all()
     serializer_class = OrderSerializer
+
+
+class AreaListAPIView(APIView):
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        areas = Area.objects.all()
+
+        if query:
+            normalized_query = normalize_area_name(query)
+            areas = areas.filter(
+                Q(name__istartswith=query) |
+                Q(normalized_name__startswith=normalized_query)
+            )
+
+        serializer = AreaSerializer(areas[:20], many=True)
+        return Response(serializer.data)
 
 
 
@@ -268,6 +286,7 @@ class CreateOrderAPIView(APIView):
         phone = (data.get("phone") or "").strip() or None
         name = (data.get("name") or "").strip() or None
         address = (data.get("address") or "").strip() or None
+        area_id = data.get("area_id")
         order_note = (data.get("order_note") or "").strip() or None
         deduct_change = bool(data.get("deduct_change"))
 
@@ -292,6 +311,7 @@ class CreateOrderAPIView(APIView):
         # ---------------- DELIVERY ----------------
 
         delivery_boy = None
+        area = None
 
         if order_type == "DELIVERY":
             if not phone:
@@ -300,8 +320,16 @@ class CreateOrderAPIView(APIView):
             if not address:
                 return Response({"error": "Address required"}, status=400)
 
+            if not area_id:
+                return Response({"error": "Select area"}, status=400)
+
             if not delivery_boy_id:
                 return Response({"error": "Select delivery boy"}, status=400)
+
+            try:
+                area = Area.objects.get(id=area_id)
+            except Area.DoesNotExist:
+                return Response({"error": "Select a valid area"}, status=400)
 
             try:
                 delivery_boy = LedgerAccount.objects.get(
@@ -319,10 +347,12 @@ class CreateOrderAPIView(APIView):
                 phone = None
                 name = None
             address = None
+            area = None
             delivery_boy = None
 
         elif order_type == "TAKEAWAY":
             address = None
+            area = None
             delivery_boy = None
             table_number = None
 
@@ -344,6 +374,7 @@ class CreateOrderAPIView(APIView):
                 customer_phone=phone,
                 customer_name=name,
                 delivery_address=address,
+                area=area,
                 order_note=order_note,
                 discount=discount,
                 delivery_charge=delivery_charge,
@@ -794,6 +825,7 @@ class UpdateOrderAPIView(APIView):
         customer_name = (data.get("customer_name") or "").strip() or None
         customer_phone = (data.get("customer_phone") or "").strip() or None
         delivery_address = (data.get("delivery_address") or "").strip() or None
+        area_id = data.get("area_id") or None
         order_note = (data.get("order_note") or "").strip() or None
         table_number = (data.get("table_number") or "").strip() or None
 
@@ -807,6 +839,7 @@ class UpdateOrderAPIView(APIView):
         items = self._validate_items(data.get("items", []), errors)
 
         delivery_boy = None
+        area = None
         delivery_boy_id = data.get("delivery_boy_id") or None
 
         if delivery_boy_id:
@@ -827,9 +860,18 @@ class UpdateOrderAPIView(APIView):
 
             if not delivery_address:
                 errors["delivery_address"] = "Enter delivery address"
+
+            if not area_id:
+                errors["area_id"] = "Select area"
+            else:
+                try:
+                    area = Area.objects.get(id=area_id)
+                except Area.DoesNotExist:
+                    errors["area_id"] = "Select a valid area"
         else:
             delivery_charge = Decimal("0.00")
             delivery_boy = None
+            area = None
 
         if order_type != "DINE_IN":
             table_number = None
@@ -839,6 +881,7 @@ class UpdateOrderAPIView(APIView):
             "customer_name": customer_name,
             "customer_phone": customer_phone,
             "delivery_address": delivery_address,
+            "area": area,
             "order_note": order_note,
             "table_number": table_number,
             "discount": discount,
@@ -1066,7 +1109,7 @@ class ExternalOrdersAPIView(APIView):
         queryset = (
             Order.objects
             .filter(submission_source="EXTERNAL")
-            .select_related("submitted_by", "acceptance_decided_by", "delivery_boy")
+            .select_related("submitted_by", "acceptance_decided_by", "delivery_boy", "area")
             .prefetch_related("items", "payments")
             .order_by("-created_at", "-id")
         )
@@ -1091,7 +1134,7 @@ class ExternalOrderDecisionAPIView(APIView):
             )
 
         try:
-            order = Order.objects.select_related("submitted_by", "acceptance_decided_by", "delivery_boy").prefetch_related("items", "payments").get(pk=pk)
+            order = Order.objects.select_related("submitted_by", "acceptance_decided_by", "delivery_boy", "area").prefetch_related("items", "payments").get(pk=pk)
         except Order.DoesNotExist:
             return Response({"error": "Order not found"}, status=404)
 
@@ -1143,7 +1186,7 @@ class OrdersFilterAPIView(APIView):
         qs = (
             Order.objects
             .filter(acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES)
-            .select_related("submitted_by")
+            .select_related("submitted_by", "area")
             .prefetch_related("items", "payments")
         )
 
@@ -1210,6 +1253,8 @@ class OrdersFilterAPIView(APIView):
                 "customer_name": o.customer_name,
                 "customer_phone": o.customer_phone,
                 "delivery_address": o.delivery_address,
+                "area": o.area_id,
+                "area_name": o.area.name if o.area else None,
                 "created_at": o.created_at,
                 "scheduled_time": o.scheduled_time,
                 "submitted_by_name": _submitted_by_name(o.submitted_by),

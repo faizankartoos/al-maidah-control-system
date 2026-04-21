@@ -244,6 +244,7 @@ def update_order_details(
     customer_name=None,
     customer_phone=None,
     delivery_address=None,
+    area=None,
     order_note=None,
     table_number=None,
     discount=Decimal("0.00"),
@@ -266,6 +267,7 @@ def update_order_details(
     order.customer_name = customer_name or None
     order.customer_phone = customer_phone or None
     order.delivery_address = delivery_address or None
+    order.area = area
     order.order_note = order_note or None
     order.discount = discount
     order.delivery_charge = delivery_charge
@@ -276,10 +278,12 @@ def update_order_details(
         order.customer_name = None
         order.customer_phone = None
         order.delivery_address = None
+        order.area = None
         order.delivery_charge = Decimal("0.00")
         order.delivery_boy = None
     elif order_type == "TAKEAWAY":
         order.delivery_address = None
+        order.area = None
         order.delivery_charge = Decimal("0.00")
         order.delivery_boy = None
         order.table_number = None
@@ -291,6 +295,7 @@ def update_order_details(
         "customer_name",
         "customer_phone",
         "delivery_address",
+        "area",
         "order_note",
         "discount",
         "delivery_charge",
