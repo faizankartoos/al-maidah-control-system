@@ -16,6 +16,7 @@ const STOCK_OUT_REASONS = [
 const INVENTORY_DETAIL_TABS = [
   { id: "snapshot", label: "Current Inventory Snapshot" },
   { id: "alerts", label: "Low Stock Alerts" },
+  { id: "usage", label: "Item Usage Intelligence" },
   { id: "adjustments", label: "Manual Stock Adjustment" },
   { id: "stock-out-log", label: "Recent Stock Out Log" },
   { id: "history", label: "Inventory History" },
@@ -48,6 +49,12 @@ function defaultLowStockExportColumns() {
 
 function getToday() {
   return new Date().toISOString().split("T")[0];
+}
+
+function getDateDaysAgo(days) {
+  const value = new Date();
+  value.setDate(value.getDate() - days);
+  return value.toISOString().split("T")[0];
 }
 
 function emptyBillForm() {
@@ -140,6 +147,20 @@ function formatDateTime(value) {
   });
 }
 
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatDays(value) {
+  if (value === null || value === undefined || value === "") return "Not enough usage yet";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "Not enough usage yet";
+  return `${formatNumber(numeric)} day${numeric >= 1.5 ? "s" : ""}`;
+}
+
 function extractError(err, fallback) {
   const data = err?.response?.data;
 
@@ -180,6 +201,12 @@ export default function InventoryTab() {
   const [editingItemId, setEditingItemId] = useState(null);
   const [inventorySearch, setInventorySearch] = useState("");
   const [inventoryDetailTab, setInventoryDetailTab] = useState("snapshot");
+  const [usageProductId, setUsageProductId] = useState("");
+  const [usageFromDate, setUsageFromDate] = useState(getDateDaysAgo(29));
+  const [usageToDate, setUsageToDate] = useState(getToday());
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState("");
+  const [usageReport, setUsageReport] = useState(null);
   const [productMode, setProductMode] = useState("create");
   const [selectedProductId, setSelectedProductId] = useState("");
 
@@ -305,6 +332,11 @@ export default function InventoryTab() {
     ? inventoryByProductId.get(adjustmentForm.product_id)
     : null;
 
+  const usageSummary = usageReport?.summary || {};
+  const usageProduct = usageReport?.product || {};
+  const usageDailyMovements = usageReport?.charts?.daily_movements || [];
+  const usageTimeline = usageReport?.details?.timeline || [];
+
   const getProductById = (productId) =>
     products.find((product) => String(product.id) === String(productId));
 
@@ -351,6 +383,16 @@ export default function InventoryTab() {
       )
     );
   }, [inventory]);
+
+  useEffect(() => {
+    if (!products.length) {
+      return;
+    }
+
+    if (!usageProductId) {
+      setUsageProductId(String(products[0].id));
+    }
+  }, [products, usageProductId]);
 
   const resetMessages = () => {
     setError("");
@@ -456,6 +498,46 @@ export default function InventoryTab() {
       setError("Failed to load inventory dashboard.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadUsageReport = async () => {
+    resetMessages();
+    setUsageError("");
+
+    if (!usageProductId) {
+      setUsageError("Choose an item first.");
+      setUsageReport(null);
+      return;
+    }
+
+    if (!usageFromDate || !usageToDate) {
+      setUsageError("Select the usage date range first.");
+      setUsageReport(null);
+      return;
+    }
+
+    if (usageFromDate > usageToDate) {
+      setUsageError("From date cannot be after To date.");
+      setUsageReport(null);
+      return;
+    }
+
+    try {
+      setUsageLoading(true);
+      const response = await api.get("reports/inventory-consumption/", {
+        params: {
+          from_date: usageFromDate,
+          to_date: usageToDate,
+          product_id: usageProductId,
+        },
+      });
+      setUsageReport(response.data);
+    } catch (err) {
+      setUsageReport(null);
+      setUsageError(extractError(err, "Unable to build the item-usage view right now."));
+    } finally {
+      setUsageLoading(false);
     }
   };
 
@@ -2177,6 +2259,275 @@ export default function InventoryTab() {
                 </div>
               </div>
             </div>
+          </DetailView>
+        )}
+
+        {inventoryDetailTab === "usage" && (
+          <DetailView
+            title="Item Usage Intelligence"
+            description="Answer stock questions inside Inventory itself: what moved in, what moved out, how fast one item is being consumed, and how long current stock can last."
+          >
+            <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
+              <div className="grid gap-4 md:grid-cols-3">
+                <SelectField
+                  label="Item"
+                  value={usageProductId}
+                  onChange={(value) => {
+                    setUsageProductId(value);
+                    setUsageReport(null);
+                    setUsageError("");
+                  }}
+                  options={products.map((product) => ({
+                    value: String(product.id),
+                    label: `${product.name} (${product.unit})`,
+                  }))}
+                  placeholder="Select item"
+                />
+                <DateField
+                  label="From"
+                  value={usageFromDate}
+                  onChange={(value) => {
+                    setUsageFromDate(value);
+                    setUsageReport(null);
+                    setUsageError("");
+                  }}
+                />
+                <DateField
+                  label="To"
+                  value={usageToDate}
+                  onChange={(value) => {
+                    setUsageToDate(value);
+                    setUsageReport(null);
+                    setUsageError("");
+                  }}
+                />
+              </div>
+
+              <div className="flex items-end">
+                <ActionButton
+                  onClick={handleLoadUsageReport}
+                  busy={usageLoading}
+                >
+                  Build Usage View
+                </ActionButton>
+              </div>
+            </div>
+
+            <InfoNote>
+              This section uses your real stock-in bills and stock-out logs, so the quality of the intelligence depends on how consistently staff records stock movement.
+            </InfoNote>
+
+            {usageError ? (
+              <Alert tone="error">{usageError}</Alert>
+            ) : null}
+
+            {usageLoading ? (
+              <div className="mt-4">
+                <PanelLoader
+                  eyebrow="Inventory Usage"
+                  label="Building usage intelligence..."
+                  description="Checking stock-in, stock-out, daily rhythm, and stock cover for the selected item."
+                />
+              </div>
+            ) : usageReport ? (
+              <div className="mt-6 space-y-6">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                  <SummaryCard
+                    label="Stocked In"
+                    value={`${formatNumber(usageSummary.total_stocked_in_qty)} ${usageProduct.unit || ""}`}
+                    accent="emerald"
+                  />
+                  <SummaryCard
+                    label="Used / Stocked Out"
+                    value={`${formatNumber(usageSummary.total_stocked_out_qty)} ${usageProduct.unit || ""}`}
+                    accent="rose"
+                  />
+                  <SummaryCard
+                    label="Avg Daily Usage"
+                    value={`${formatNumber(usageSummary.average_daily_usage)} ${usageProduct.unit || ""}`}
+                    accent="amber"
+                  />
+                  <SummaryCard
+                    label="1 Unit Lasts"
+                    value={formatDays(usageSummary.days_per_unit_used)}
+                    accent="blue"
+                  />
+                  <SummaryCard
+                    label="Current Stock Cover"
+                    value={formatDays(usageSummary.current_stock_cover_days)}
+                    accent="slate"
+                  />
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-[0.95fr,1.05fr]">
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                    <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                      Owner Reading
+                    </h4>
+                    <div className="mt-4 space-y-4">
+                      <ReadOnlyHint
+                        label="Current Stock"
+                        value={`${formatNumber(usageProduct.current_stock)} ${usageProduct.unit || ""}`}
+                      />
+                      <ReadOnlyHint
+                        label="Current Stock Value"
+                        value={`Rs ${formatMoney(usageProduct.current_value)}`}
+                      />
+                      <ReadOnlyHint
+                        label="Average Unit Cost"
+                        value={`Rs ${formatMoney(usageProduct.average_unit_cost)}`}
+                      />
+                      <div className="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 text-sm leading-7 text-gray-300">
+                        {Number(usageSummary.total_stocked_out_qty || 0) > 0 ? (
+                          <>
+                            <div>
+                              <span className="font-semibold text-white">{usageProduct.name}</span> moved out by{" "}
+                              <span className="font-semibold text-white">
+                                {formatNumber(usageSummary.total_stocked_out_qty)} {usageProduct.unit}
+                              </span>{" "}
+                              in this range.
+                            </div>
+                            <div className="mt-2">
+                              That works out to roughly{" "}
+                              <span className="font-semibold text-white">
+                                {formatNumber(usageSummary.average_daily_usage)} {usageProduct.unit}
+                              </span>{" "}
+                              per day, and current stock can cover about{" "}
+                              <span className="font-semibold text-white">
+                                {formatDays(usageSummary.current_stock_cover_days)}
+                              </span>{" "}
+                              if usage stays similar.
+                            </div>
+                          </>
+                        ) : (
+                          "This item has no stock-out activity in the selected range yet, so usage and stock-cover estimates are still weak."
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                        Daily Movement Graph
+                      </h4>
+                      <div className="text-xs text-gray-500">
+                        Green = in, Red = out
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {usageDailyMovements.length ? (
+                        usageDailyMovements.map((row) => {
+                          const maxMovement = Math.max(
+                            ...usageDailyMovements.map((entry) =>
+                              Math.max(
+                                Number(entry.stocked_in_qty || 0),
+                                Number(entry.stocked_out_qty || 0),
+                                1
+                              )
+                            )
+                          );
+                          const stockInWidth = `${(Number(row.stocked_in_qty || 0) / maxMovement) * 100}%`;
+                          const stockOutWidth = `${(Number(row.stocked_out_qty || 0) / maxMovement) * 100}%`;
+
+                          return (
+                            <div key={row.date} className="rounded-xl border border-gray-800 bg-gray-900/50 p-3">
+                              <div className="flex items-center justify-between gap-3 text-xs text-gray-400">
+                                <span>{formatDate(row.date)}</span>
+                                <span>
+                                  In {formatNumber(row.stocked_in_qty)} / Out {formatNumber(row.stocked_out_qty)}
+                                </span>
+                              </div>
+                              <div className="mt-3 space-y-2">
+                                <div>
+                                  <div className="mb-1 text-[11px] uppercase tracking-[0.18em] text-emerald-300">
+                                    Stock In
+                                  </div>
+                                  <div className="h-2 overflow-hidden rounded-full bg-gray-800">
+                                    <div
+                                      className="h-full rounded-full bg-emerald-400"
+                                      style={{ width: stockInWidth }}
+                                    />
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="mb-1 text-[11px] uppercase tracking-[0.18em] text-rose-300">
+                                    Stock Out
+                                  </div>
+                                  <div className="h-2 overflow-hidden rounded-full bg-gray-800">
+                                    <div
+                                      className="h-full rounded-full bg-rose-400"
+                                      style={{ width: stockOutWidth }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <EmptyState text="No daily movement data available in this range." />
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-400">
+                      Movement Timeline
+                    </h4>
+                    <div className="text-xs text-gray-500">
+                      Latest {usageTimeline.length} event(s)
+                    </div>
+                  </div>
+
+                  {usageTimeline.length ? (
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="w-full min-w-[980px] text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-800 text-gray-400">
+                            <th className="pb-3">When</th>
+                            <th className="pb-3">Type</th>
+                            <th className="pb-3">Qty</th>
+                            <th className="pb-3">Value</th>
+                            <th className="pb-3">Reference</th>
+                            <th className="pb-3">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usageTimeline.map((entry) => (
+                            <tr key={entry.id} className="border-b border-gray-900 text-gray-200">
+                              <td className="py-3 text-gray-400">{formatDateTime(entry.occurred_at)}</td>
+                              <td className="py-3">
+                                <ToneBadge tone={entry.event_type === "STOCK_IN" ? "success" : "danger"}>
+                                  {entry.label}
+                                </ToneBadge>
+                              </td>
+                              <td className="py-3">
+                                {formatNumber(entry.quantity)} {usageProduct.unit || ""}
+                              </td>
+                              <td className="py-3">Rs {formatMoney(entry.value)}</td>
+                              <td className="py-3 text-gray-300">{entry.reference || "-"}</td>
+                              <td className="py-3 text-gray-400">{entry.notes || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="mt-4">
+                      <EmptyState text="No movement events found for this item in the selected range." />
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4">
+                <EmptyState text="Choose an item and build the usage view to open stock analytics here." />
+              </div>
+            )}
           </DetailView>
         )}
 

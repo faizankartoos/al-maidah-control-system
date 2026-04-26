@@ -18,6 +18,24 @@ from .utils import get_cash_drawer
 from orders.models import Order, OrderPayment
 
 ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah"
+UNDO_REFERENCE_PREFIX = "UNDO-ENTRY-"
+
+
+def _detach_account_from_orders(account):
+    if account.account_type == "CUSTOMER":
+        Order.objects.filter(customer_account=account).update(customer_account=None)
+        return
+
+    if account.account_type == "DELIVERY":
+        Order.objects.filter(delivery_boy=account).update(delivery_boy=None)
+
+
+def _vendor_entry_can_be_undone(entry):
+    return (
+        entry.ledger_account.account_type == "VENDOR"
+        and entry.reference in {"VENDOR-DUE", "VENDOR-PAY"}
+        and not LedgerEntry.objects.filter(reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}").exists()
+    )
 
 
 def _sync_customer_collection_to_orders(account, amount, payment_type):
@@ -138,12 +156,14 @@ class AccountDetailAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        _detach_account_from_orders(account)
+
         try:
             account.delete()
         except ProtectedError:
             return Response(
                 {
-                    "error": "This account cannot be deleted because it is already linked to ledger entries or orders."
+                    "error": "This account cannot be deleted because it still has ledger transaction history."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -170,13 +190,29 @@ class AccountQuickDeleteAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        _detach_account_from_orders(account)
+
+        if account.entries.exists():
+            if account.is_active:
+                account.is_active = False
+                account.save(update_fields=["is_active"])
+
+            return Response(
+                {
+                    "message": "Ledger account archived safely. Transaction history was kept untouched.",
+                    "account_name": account.name,
+                    "action": "archived",
+                },
+                status=status.HTTP_200_OK,
+            )
+
         try:
             account_name = account.name
             account.delete()
         except ProtectedError:
             return Response(
                 {
-                    "error": "Quick delete is only allowed for fresh accounts. This account has linked orders or transactions, so its history was kept untouched."
+                    "error": "Quick delete could not finish. This account still has protected linked records."
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -185,6 +221,7 @@ class AccountQuickDeleteAPIView(APIView):
             {
                 "message": "Ledger account deleted.",
                 "account_name": account_name,
+                "action": "deleted",
             },
             status=status.HTTP_200_OK,
         )
@@ -266,6 +303,11 @@ class LedgerEntriesAPIView(APIView):
                 | Q(ledger_account__name__icontains=search)
             )
 
+        undone_references = set(
+            LedgerEntry.objects.filter(reference__startswith=UNDO_REFERENCE_PREFIX)
+            .values_list("reference", flat=True)
+        )
+
         data = [
             {
                 "id": entry.id,
@@ -278,6 +320,11 @@ class LedgerEntriesAPIView(APIView):
                 "reference": entry.reference,
                 "description": entry.description,
                 "date": entry.created_at,
+                "can_undo": (
+                    entry.ledger_account.account_type == "VENDOR"
+                    and entry.reference in {"VENDOR-DUE", "VENDOR-PAY"}
+                    and f"{UNDO_REFERENCE_PREFIX}{entry.id}" not in undone_references
+                ),
             }
             for entry in queryset
         ]
@@ -318,20 +365,6 @@ class CollectFromAccountAPIView(APIView):
         if amount <= 0:
             return Response({"error": "Amount must be greater than zero"}, status=status.HTTP_400_BAD_REQUEST)
 
-        outstanding = Decimal(str(account.balance))
-
-        if outstanding <= 0:
-            return Response(
-                {"error": "This customer has no outstanding balance to collect."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if amount > outstanding:
-            return Response(
-                {"error": "Cannot collect more than the customer's outstanding balance."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         cash = get_cash_drawer()
 
         record_debit(
@@ -356,6 +389,8 @@ class CollectFromAccountAPIView(APIView):
             payment_type=payment_type,
         )
 
+        account.refresh_from_db()
+
         return Response(
             {
                 "success": True,
@@ -363,5 +398,125 @@ class CollectFromAccountAPIView(APIView):
                 "amount": amount,
                 "payment_type": payment_type,
                 "updated_orders": updated_orders,
+                "current_balance": account.balance,
+            }
+        )
+
+
+class VendorLedgerEntryAPIView(APIView):
+
+    @transaction.atomic
+    def post(self, request):
+        account_id = request.data.get("account_id")
+        mode = str(request.data.get("mode") or "").upper()
+        amount = request.data.get("amount")
+        payment_type = str(request.data.get("payment_type") or "CASH").upper()
+        note = str(request.data.get("note") or "").strip()
+
+        if not account_id or amount in (None, ""):
+            return Response({"error": "Vendor account and amount are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        vendor = get_object_or_404(LedgerAccount, id=account_id, account_type="VENDOR")
+
+        try:
+            amount = Decimal(str(amount))
+        except (InvalidOperation, TypeError):
+            return Response({"error": "Enter a valid amount."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if amount <= 0:
+            return Response({"error": "Amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if mode not in {"OWE", "PAY"}:
+            return Response({"error": "Select a valid vendor action."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if mode == "PAY" and payment_type not in {"CASH", "ONLINE"}:
+            return Response({"error": "Vendor payment must be cash or online."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if mode == "OWE":
+            record_credit(
+                account=vendor,
+                amount=amount,
+                payment_type="SYSTEM",
+                reference="VENDOR-DUE",
+                description=note or "Vendor due recorded",
+            )
+        else:
+            cash = get_cash_drawer()
+            record_debit(
+                account=vendor,
+                amount=amount,
+                payment_type=payment_type,
+                reference="VENDOR-PAY",
+                description=note or "Vendor payment recorded",
+            )
+            record_debit(
+                account=cash,
+                amount=amount,
+                payment_type=payment_type,
+                reference=f"VENDOR-PAY-{vendor.id}",
+                description=f"Vendor payment made to {vendor.name}",
+            )
+
+        vendor.refresh_from_db()
+
+        return Response(
+            {
+                "success": True,
+                "account_id": vendor.id,
+                "account_name": vendor.name,
+                "mode": mode,
+                "amount": amount,
+                "current_balance": vendor.balance,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class LedgerEntryUndoAPIView(APIView):
+
+    @transaction.atomic
+    def post(self, request, entry_id):
+        entry = get_object_or_404(
+            LedgerEntry.objects.select_related("ledger_account"),
+            id=entry_id,
+        )
+
+        if entry.ledger_account.account_type != "VENDOR":
+            return Response({"error": "Undo is only available for vendor ledger entries."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if entry.reference not in {"VENDOR-DUE", "VENDOR-PAY"}:
+            return Response({"error": "This transaction cannot be undone from the vendor ledger."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if LedgerEntry.objects.filter(reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}").exists():
+            return Response({"error": "This transaction was already undone."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reverse_entry_type = "DEBIT" if entry.entry_type == "CREDIT" else "CREDIT"
+
+        LedgerEntry.objects.create(
+            ledger_account=entry.ledger_account,
+            amount=entry.amount,
+            entry_type=reverse_entry_type,
+            payment_type=entry.payment_type,
+            reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}",
+            description=f"Undo for entry #{entry.id}: {entry.description or entry.reference or 'vendor transaction'}",
+        )
+
+        if entry.reference == "VENDOR-PAY":
+            record_credit(
+                account=get_cash_drawer(),
+                amount=entry.amount,
+                payment_type=entry.payment_type,
+                reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}",
+                description=f"Undo vendor payment for {entry.ledger_account.name}",
+            )
+
+        entry.ledger_account.refresh_from_db()
+
+        return Response(
+            {
+                "success": True,
+                "entry_id": entry.id,
+                "account_id": entry.ledger_account.id,
+                "current_balance": entry.ledger_account.balance,
             }
         )

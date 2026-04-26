@@ -2,10 +2,12 @@ from ledger.services import record_credit, record_debit
 from ledger.utils import get_cash_drawer
 
 from .services import (
+    apply_customer_advance_to_order,
     cancel_order,
     ChangeConfirmationRequired,
     collect_payment,
     complete_unpaid_order,
+    get_customer_context_by_phone,
     process_payment,
     sync_external_order_acceptance,
     update_order_details,
@@ -153,6 +155,55 @@ class AreaListAPIView(APIView):
         return Response(serializer.data)
 
 
+class CustomerLookupAPIView(APIView):
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+
+        if not query:
+            return Response([])
+
+        customer_rows = {}
+
+        customer_accounts = (
+            LedgerAccount.objects
+            .filter(account_type="CUSTOMER", contact_number__startswith=query)
+            .order_by("contact_number", "name")
+        )
+
+        for account in customer_accounts:
+            context = get_customer_context_by_phone(account.contact_number)
+            if context:
+                customer_rows[context["phone"]] = context
+
+        order_phone_rows = (
+            Order.objects
+            .exclude(customer_phone__isnull=True)
+            .exclude(customer_phone__exact="")
+            .filter(customer_phone__startswith=query)
+            .values_list("customer_phone", flat=True)
+            .distinct()[:20]
+        )
+
+        for phone in order_phone_rows:
+            if phone in customer_rows:
+                continue
+            context = get_customer_context_by_phone(phone)
+            if context:
+                customer_rows[context["phone"]] = context
+
+        payload = [
+            {
+                **row,
+                "current_balance": row["current_balance"],
+                "advance_available": row["advance_available"],
+            }
+            for row in customer_rows.values()
+        ]
+
+        payload.sort(key=lambda row: (row["phone"], row["name"].lower()))
+        return Response(payload[:20])
+
+
 
 class CreateOrderAPIView(APIView):
     required_tabs = ("ORDERS",)
@@ -227,6 +278,7 @@ class CreateOrderAPIView(APIView):
         delivery_boy_id = data.get("delivery_boy_id")
         submission_source = (data.get("submission_source") or "INTERNAL").strip().upper()
         require_acceptance = _parse_bool(data.get("require_acceptance"))
+        apply_customer_advance = _parse_bool(data.get("apply_customer_advance"))
 
         if submission_source not in {"INTERNAL", "EXTERNAL"}:
             return Response({"error": "Select a valid submission source"}, status=400)
@@ -317,9 +369,6 @@ class CreateOrderAPIView(APIView):
             if not phone:
                 return Response({"error": "Phone required"}, status=400)
 
-            if not address:
-                return Response({"error": "Address required"}, status=400)
-
             if not area_id:
                 return Response({"error": "Select area"}, status=400)
 
@@ -343,9 +392,6 @@ class CreateOrderAPIView(APIView):
 
         # Normalize fields
         if order_type == "DINE_IN":
-            if not scheduled_time:
-                phone = None
-                name = None
             address = None
             area = None
             delivery_boy = None
@@ -395,7 +441,31 @@ class CreateOrderAPIView(APIView):
                 )
 
             order.refresh_from_db()
-            total = order.total_amount
+            total = Decimal(str(order.total_amount))
+            advance_applied = Decimal("0.00")
+            customer_context = get_customer_context_by_phone(phone) if phone else None
+            customer_account = None
+
+            if customer_context and customer_context["account_id"]:
+                customer_account = LedgerAccount.objects.get(id=customer_context["account_id"])
+
+            if (
+                apply_customer_advance
+                and acceptance_status in ACTIVE_ACCEPTANCE_STATUSES
+                and customer_account
+            ):
+                advance_applied = apply_customer_advance_to_order(order, customer_account)
+
+            remaining_after_advance = total - advance_applied
+
+            if remaining_after_advance <= 0:
+                order.payment_status = "PAID"
+                if customer_account and not order.customer_account_id:
+                    order.customer_account = customer_account
+                    order.save(update_fields=["payment_status", "customer_account"])
+                else:
+                    order.save(update_fields=["payment_status"])
+                return order, advance_applied
 
             # ---------------- PAYMENT RULES ----------------
 
@@ -408,23 +478,27 @@ class CreateOrderAPIView(APIView):
                 ):
                     record_debit(
                         account=delivery_boy,
-                        amount=total,
+                        amount=remaining_after_advance,
                         payment_type="SYSTEM",
                         reference=f"ORDER-{order.id}",
                         description=f"Delivery order assigned #{order.id}"
                     )
 
                 order.payment_status = "UNPAID"
-                order.save(update_fields=["payment_status"])
-                return order
+                if customer_account and advance_applied > 0 and not order.customer_account_id:
+                    order.customer_account = customer_account
+                    order.save(update_fields=["payment_status", "customer_account"])
+                else:
+                    order.save(update_fields=["payment_status"])
+                return order, advance_applied
 
             # 🚨 NO PARTIAL PAYMENTS
-            if payment_amount < total:
+            if payment_amount < remaining_after_advance:
                 raise ValueError("Cannot accept less than total amount")
 
             # Change confirmation
-            if payment_amount > total and not deduct_change:
-                raise ChangeConfirmationRequired(payment_amount - total)
+            if payment_amount > remaining_after_advance and not deduct_change:
+                raise ChangeConfirmationRequired(payment_amount - remaining_after_advance)
 
             # Mixed validation
             if payment_method == "MIXED":
@@ -441,10 +515,10 @@ class CreateOrderAPIView(APIView):
                 deduct_change=deduct_change
             )
 
-            return order
+            return order, advance_applied
 
         try:
-            order = create_order()
+            order, advance_applied = create_order()
 
         except ChangeConfirmationRequired as exc:
             return Response(
@@ -464,6 +538,7 @@ class CreateOrderAPIView(APIView):
                 "success": True,
                 "order_id": order.id,
                 "total": order.total_amount,
+                "advance_applied": advance_applied,
                 "acceptance_status": order.acceptance_status,
                 "submission_source": order.submission_source,
             },
@@ -857,9 +932,6 @@ class UpdateOrderAPIView(APIView):
         if order_type == "DELIVERY":
             if not customer_phone:
                 errors["customer_phone"] = "Enter phone number"
-
-            if not delivery_address:
-                errors["delivery_address"] = "Enter delivery address"
 
             if not area_id:
                 errors["area_id"] = "Select area"

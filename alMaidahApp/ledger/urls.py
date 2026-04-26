@@ -7,7 +7,9 @@ from .views import (
     DailyReportAPIView,
     DeliveryBoysAPIView,
     LedgerEntriesAPIView,
-    CollectFromAccountAPIView
+    CollectFromAccountAPIView,
+    VendorLedgerEntryAPIView,
+    LedgerEntryUndoAPIView,
 )
 
 urlpatterns = [
@@ -20,5 +22,7 @@ urlpatterns = [
     path("ledger/delivery-boys/", DeliveryBoysAPIView.as_view()),
     path("ledger/entries/", LedgerEntriesAPIView.as_view()),
     path("ledger/collect/", CollectFromAccountAPIView.as_view()),
+    path("ledger/vendor-entry/", VendorLedgerEntryAPIView.as_view()),
+    path("ledger/entries/<int:entry_id>/undo/", LedgerEntryUndoAPIView.as_view()),
 
 ]

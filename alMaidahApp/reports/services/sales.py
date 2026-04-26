@@ -41,6 +41,8 @@ def _payment_breakdowns(from_date, to_date):
             channel_totals["ONLINE"] += online_amount
         elif payment.payment_type == "ONLINE":
             channel_totals["ONLINE"] += amount
+        elif payment.payment_type == "ADVANCE":
+            continue
         else:
             channel_totals["CASH"] += amount
 

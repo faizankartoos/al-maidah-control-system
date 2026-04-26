@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.db.models import Sum
 from rest_framework.authtoken.models import Token
 
 from ledger.models import LedgerAccount, LedgerEntry
@@ -85,7 +86,7 @@ class CollectFromAccountTests(AuthenticatedLedgerTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("only for customer", response.json()["error"].lower())
 
-    def test_collect_cannot_exceed_customer_outstanding(self):
+    def test_collect_can_exceed_customer_outstanding_and_turn_extra_into_advance(self):
         customer = LedgerAccount.objects.create(
             name="Test Customer",
             account_type="CUSTOMER",
@@ -108,8 +109,58 @@ class CollectFromAccountTests(AuthenticatedLedgerTestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(customer.balance, Decimal("100.00"))
+        self.assertEqual(response.status_code, 200)
+
+        customer.refresh_from_db()
+        self.assertEqual(customer.balance, Decimal("-20.00"))
+
+    def test_collect_allocates_oldest_completed_orders_first(self):
+        customer = LedgerAccount.objects.create(
+            name="Oldest First Customer",
+            account_type="CUSTOMER",
+            contact_number="9999999995",
+        )
+
+        older_order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Oldest First Customer",
+            customer_phone="9999999995",
+            customer_account=customer,
+            total_amount=Decimal("200.00"),
+        )
+        newer_order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Oldest First Customer",
+            customer_phone="9999999995",
+            customer_account=customer,
+            total_amount=Decimal("200.00"),
+        )
+
+        record_credit(account=customer, amount=Decimal("200.00"), reference=f"ORDER-{older_order.id}", description="Older due")
+        record_credit(account=customer, amount=Decimal("200.00"), reference=f"ORDER-{newer_order.id}", description="Newer due")
+
+        response = self.client.post(
+            "/api/ledger/collect/",
+            {
+                "account_id": customer.id,
+                "amount": "250.00",
+                "payment_type": "CASH",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        older_order.refresh_from_db()
+        newer_order.refresh_from_db()
+
+        self.assertEqual(older_order.payment_status, "PAID")
+        self.assertEqual(newer_order.payment_status, "UNPAID")
+        self.assertEqual(older_order.payments.aggregate(total=Sum("amount"))["total"], Decimal("200.00"))
+        self.assertEqual(newer_order.payments.aggregate(total=Sum("amount"))["total"], Decimal("50.00"))
 
     def test_collect_accepts_online_and_marks_entries_correctly(self):
         customer = LedgerAccount.objects.create(
@@ -361,6 +412,31 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertTrue(LedgerAccount.objects.filter(id=customer.id).exists())
         self.assertIn("cannot be deleted", response.json()["error"].lower())
 
+    def test_can_delete_account_with_linked_orders_when_no_ledger_history_exists(self):
+        customer = LedgerAccount.objects.create(
+            name="Detach Me",
+            account_type="CUSTOMER",
+            contact_number="7000000099",
+        )
+
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Detach Me",
+            customer_phone="7000000099",
+            customer_account=customer,
+            total_amount=Decimal("80.00"),
+        )
+
+        response = self.client.delete(f"/api/accounts/{customer.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(LedgerAccount.objects.filter(id=customer.id).exists())
+
+        order.refresh_from_db()
+        self.assertIsNone(order.customer_account)
+
     def test_cash_drawer_cannot_be_edited_or_deleted(self):
         cash = get_cash_drawer()
 
@@ -388,7 +464,7 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertTrue(LedgerAccount.objects.filter(id=account.id).exists())
 
-    def test_quick_delete_blocks_account_with_linked_orders_and_entries(self):
+    def test_quick_delete_archives_account_with_linked_orders_and_entries(self):
         customer = LedgerAccount.objects.create(
             name="Quick Delete Customer",
             account_type="CUSTOMER",
@@ -424,9 +500,13 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
             {"password": "admin@almaidah"},
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(LedgerAccount.objects.filter(id=customer.id).exists())
+        customer.refresh_from_db()
+        self.assertFalse(customer.is_active)
         self.assertTrue(Order.objects.filter(id=order.id).exists())
+        order.refresh_from_db()
+        self.assertIsNone(order.customer_account)
         self.assertTrue(LedgerEntry.objects.filter(reference=f"ORDER-{order.id}").exists())
 
 
@@ -491,3 +571,73 @@ class LedgerDailyReportTests(AuthenticatedLedgerTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["summary"]["unpaid_orders_count"], 1)
         self.assertEqual(response.json()["unpaid_orders"][0]["id"], order.id)
+
+
+class VendorLedgerTests(AuthenticatedLedgerTestCase):
+
+    def test_vendor_due_and_payment_entries_can_be_recorded(self):
+        vendor = LedgerAccount.objects.create(
+            name="Fresh Vendor",
+            account_type="VENDOR",
+        )
+
+        due_response = self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "OWE",
+                "amount": "300.00",
+                "note": "Invoice 12",
+            },
+        )
+
+        self.assertEqual(due_response.status_code, 201)
+
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.balance, Decimal("300.00"))
+
+        pay_response = self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "PAY",
+                "amount": "120.00",
+                "payment_type": "CASH",
+                "note": "Part payment",
+            },
+        )
+
+        self.assertEqual(pay_response.status_code, 201)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.balance, Decimal("180.00"))
+
+    def test_vendor_entry_can_be_undone_without_deleting_original_audit(self):
+        vendor = LedgerAccount.objects.create(
+            name="Undo Vendor",
+            account_type="VENDOR",
+        )
+
+        create_response = self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "OWE",
+                "amount": "90.00",
+                "note": "Wrong entry",
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+
+        original_entry = LedgerEntry.objects.get(
+            ledger_account=vendor,
+            reference="VENDOR-DUE",
+        )
+
+        undo_response = self.client.post(f"/api/ledger/entries/{original_entry.id}/undo/")
+
+        self.assertEqual(undo_response.status_code, 200)
+
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.balance, Decimal("0.00"))
+        self.assertTrue(LedgerEntry.objects.filter(reference=f"UNDO-ENTRY-{original_entry.id}").exists())

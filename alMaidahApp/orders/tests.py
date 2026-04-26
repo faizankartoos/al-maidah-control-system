@@ -68,6 +68,29 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(order.table_number, "Table 3")
         self.assertEqual(order.payments.count(), 0)
 
+    def test_dine_in_order_can_store_optional_phone(self):
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DINE_IN",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000999",
+                "name": "Walk In Guest",
+                "table_number": "Table 4",
+                "items": [
+                    {"name": "Kahwa", "qty": 1, "price": "30.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+        self.assertEqual(order.customer_phone, "9900000999")
+        self.assertEqual(order.customer_name, "Walk In Guest")
+
     def test_fully_paid_delivery_order_does_not_leave_balance_on_delivery_boy(self):
 
         delivery_boy = LedgerAccount.objects.create(
@@ -192,6 +215,37 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
         order = Order.objects.get(id=response.json()["order_id"])
 
         self.assertEqual(order.area, area)
+
+    def test_delivery_order_allows_blank_address_when_area_is_selected(self):
+
+        delivery_boy = LedgerAccount.objects.create(
+            name="No Address Rider",
+            account_type="DELIVERY",
+            contact_number="7000000005"
+        )
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "delivery_boy_id": delivery_boy.id,
+                "payment_mode": "PAY_LATER",
+                "phone": "9900000005",
+                "name": "Customer",
+                "address": "",
+                "area_id": self.default_area.id,
+                "items": [
+                    {"name": "Burger", "qty": 1, "price": "50.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+        self.assertEqual(order.area, self.default_area)
+        self.assertEqual(order.delivery_address, None)
 
     def test_underpayment_is_rejected_and_does_not_create_order(self):
 
@@ -398,6 +452,54 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
 
         order.refresh_from_db()
         self.assertEqual(order.area, area)
+
+    def test_delivery_update_allows_blank_address_when_area_is_selected(self):
+
+        area = Area.objects.create(name="Nowgam")
+        delivery_boy = LedgerAccount.objects.create(
+            name="Flexible Rider",
+            account_type="DELIVERY",
+            contact_number="7000000110"
+        )
+        order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Customer",
+            customer_phone="9900000110",
+            delivery_address="Near bridge",
+            area=self.default_area,
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Tea",
+            quantity=1,
+            price=Decimal("20.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "customer_name": "Customer",
+                "customer_phone": "9900000110",
+                "delivery_address": "",
+                "area_id": area.id,
+                "delivery_boy_id": delivery_boy.id,
+                "discount": "0.00",
+                "delivery_charge": "10.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "20.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.area, area)
+        self.assertIsNone(order.delivery_address)
 
     def test_completed_order_cannot_be_updated(self):
 
@@ -934,6 +1036,64 @@ class AreaLookupTests(AuthenticatedOrdersAPITestCase):
         area_names = [row["name"] for row in response.json()]
         self.assertIn("Chadoora", area_names)
         self.assertNotIn("Buchroo", area_names)
+
+    def test_customer_lookup_returns_existing_phone_and_advance_context(self):
+        LedgerAccount.objects.create(
+            name="Advance Customer",
+            account_type="CUSTOMER",
+            contact_number="9900011111",
+            opening_balance=Decimal("-120.00"),
+        )
+
+        response = self.client.get("/api/orders/customers/?q=9900")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        matched = next(row for row in payload if row["phone"] == "9900011111")
+
+        self.assertEqual(matched["name"], "Advance Customer")
+        self.assertEqual(Decimal(str(matched["advance_available"])), Decimal("120.00"))
+        self.assertTrue(matched["has_advance"])
+
+
+class AdvanceApplicationTests(AuthenticatedOrdersAPITestCase):
+
+    def test_customer_advance_is_applied_to_new_order_when_requested(self):
+        customer = LedgerAccount.objects.create(
+            name="Advance Customer",
+            account_type="CUSTOMER",
+            contact_number="9900022222",
+            opening_balance=Decimal("-100.00"),
+        )
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "payment_mode": "PAY_LATER",
+                "phone": "9900022222",
+                "name": "Advance Customer",
+                "apply_customer_advance": True,
+                "items": [
+                    {"name": "Pizza", "qty": 1, "price": "80.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+        customer.refresh_from_db()
+
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertEqual(order.customer_account, customer)
+        self.assertEqual(Decimal(str(response.json()["advance_applied"])), Decimal("80.00"))
+
+        payment = order.payments.get()
+        self.assertEqual(payment.payment_type, "ADVANCE")
+        self.assertEqual(payment.amount, Decimal("80.00"))
+        self.assertEqual(customer.balance, Decimal("-20.00"))
 
     def test_external_orders_that_require_acceptance_must_use_pay_later(self):
 

@@ -13,6 +13,10 @@ def account_ledger_report(account_id):
     account = LedgerAccount.objects.get(id=account_id)
 
     entries = account.entries.order_by("created_at", "id")
+    undone_references = set(
+        account.entries.filter(reference__startswith="UNDO-ENTRY-")
+        .values_list("reference", flat=True)
+    )
 
     running_balance = Decimal(str(account.opening_balance))
     total_credits = Decimal("0.00")
@@ -39,6 +43,11 @@ def account_ledger_report(account_id):
                 "reference": entry.reference,
                 "description": entry.description,
                 "running_balance": running_balance,
+                "can_undo": (
+                    account.account_type == "VENDOR"
+                    and entry.reference in {"VENDOR-DUE", "VENDOR-PAY"}
+                    and f"UNDO-ENTRY-{entry.id}" not in undone_references
+                ),
             }
         )
 

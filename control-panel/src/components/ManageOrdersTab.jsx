@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api, { buildApiUrl } from "../services/api";
 import { PanelLoader } from "./SystemLoader";
 import AreaAutocomplete from "./AreaAutocomplete";
+import CustomerPhoneAutocomplete from "./CustomerPhoneAutocomplete";
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("en-IN", {
@@ -482,8 +483,6 @@ export default function ManageOrdersTab({
     setUpdateErrors({});
 
     if (nextOrderType === "DINE_IN") {
-      setUpdateName("");
-      setUpdatePhone("");
       setUpdateAddress("");
       setUpdateAreaId("");
       setUpdateAreaName("");
@@ -501,6 +500,26 @@ export default function ManageOrdersTab({
       setUpdateDeliveryBoyId("");
       setUpdateDeliveryCharge(0);
     }
+  }
+
+  function handleUpdateCustomerSelect(customer) {
+    if (!updateName.trim() && customer?.name) {
+      setUpdateName(customer.name);
+    }
+
+    if (updateOrderType === "DELIVERY") {
+      if (!updateAddress.trim() && customer?.address) {
+        setUpdateAddress(customer.address);
+      }
+
+      if (!updateAreaId && customer?.area_id) {
+        setUpdateAreaId(String(customer.area_id));
+        setUpdateAreaName(customer.area_name || "");
+      }
+    }
+
+    clearUpdateError("customer_phone");
+    setUpdateFormError("");
   }
 
   function validateUpdatedOrder() {
@@ -521,10 +540,6 @@ export default function ManageOrdersTab({
 
       if (!updateAreaId) {
         errors.area_id = "Select area";
-      }
-
-      if (!updateAddress.trim()) {
-        errors.delivery_address = "Enter delivery address";
       }
     }
 
@@ -1086,8 +1101,8 @@ export default function ManageOrdersTab({
     const payload = {
 
       order_type: updateOrderType,
-      customer_name: updateOrderType === "DINE_IN" ? null : updateName.trim() || null,
-      customer_phone: updateOrderType === "DINE_IN" ? null : updatePhone.trim() || null,
+      customer_name: updateName.trim() || null,
+      customer_phone: updatePhone.trim() || null,
       delivery_address: updateOrderType === "DELIVERY" ? updateAddress.trim() || null : null,
       area_id: updateOrderType === "DELIVERY" ? updateAreaId || null : null,
       delivery_boy_id: updateOrderType === "DELIVERY" ? updateDeliveryBoyId || null : null,
@@ -2265,7 +2280,6 @@ className={inputStyle}
 )}
 </div>
 
-{(updateOrderType === "TAKEAWAY" || updateOrderType === "DELIVERY") && (
 <div>
 <label className="block mb-1">Customer Name</label>
 <input
@@ -2278,28 +2292,33 @@ setUpdateFormError("")
 className={inputStyle}
 />
 </div>
-)}
 
-{(updateOrderType === "TAKEAWAY" || updateOrderType === "DELIVERY") && (
 <div>
-<label className="block mb-1">Phone</label>
-<input
+<CustomerPhoneAutocomplete
 value={updatePhone}
-onChange={(e)=>{
-setUpdatePhone(e.target.value)
+onChange={(value)=>{
+setUpdatePhone(value)
 clearUpdateError("customer_phone")
 setUpdateFormError("")
 }}
-className={inputStyle}
+onSelectCustomer={handleUpdateCustomerSelect}
+label="Phone"
+error={updateErrors.customer_phone}
+helperText={
+  updateOrderType === "DELIVERY"
+    ? "Search existing customer phone numbers. Area and address can be filled from the matched record."
+    : "Search existing customer phone numbers if this customer already exists."
+}
 />
-{updateErrors.customer_phone && (
-<div className="mt-1 text-xs text-red-400">{updateErrors.customer_phone}</div>
-)}
+</div>
+
+{updateOrderType==="DINE_IN" && (
+<div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-3 text-xs leading-6 text-slate-400">
+Phone is optional for Dine-In, but adding it helps reuse customer history and future advance automatically.
 </div>
 )}
 
 {updateOrderType==="DINE_IN" && (
-
 <div>
 <label className="block mb-1">Table Number</label>
 <input
@@ -2359,12 +2378,12 @@ clearUpdateError("area_id")
 setUpdateFormError("")
 }}
 error={updateErrors.area_id}
-helperText="Pick the saved delivery area, then keep the detailed address below."
+helperText="Pick the saved delivery area. The detailed address below is optional."
 />
 </div>
 
 <div>
-<label className="block mb-1">Delivery Address</label>
+<label className="block mb-1">Delivery Address <span className="text-slate-400">(Optional)</span></label>
 <textarea
 value={updateAddress}
 onChange={(e)=>{
@@ -2374,9 +2393,6 @@ setUpdateFormError("")
 }}
 className={`${inputStyle} resize-none`}
 />
-{updateErrors.delivery_address && (
-<div className="mt-1 text-xs text-red-400">{updateErrors.delivery_address}</div>
-)}
 </div>
 
 <div>

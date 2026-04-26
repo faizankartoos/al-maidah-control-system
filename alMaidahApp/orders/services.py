@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from ledger.services import record_credit, record_debit
 from ledger.utils import get_cash_drawer, get_or_create_customer
+from ledger.models import LedgerAccount
 
 from .models import OrderPayment, Order, OrderItem
 
@@ -17,6 +18,97 @@ class ChangeConfirmationRequired(ValueError):
         super().__init__(
             f"Confirm deduction of {self.change_amount} from the cash drawer"
         )
+
+
+def get_customer_context_by_phone(phone):
+    cleaned_phone = (phone or "").strip()
+
+    if not cleaned_phone:
+        return None
+
+    customer_account = (
+        LedgerAccount.objects
+        .filter(account_type="CUSTOMER", contact_number=cleaned_phone)
+        .first()
+    )
+    latest_order = (
+        Order.objects
+        .filter(customer_phone=cleaned_phone)
+        .select_related("area")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+    if not customer_account and not latest_order:
+        return None
+
+    current_balance = Decimal(str(customer_account.balance)) if customer_account else Decimal("0.00")
+    advance_available = abs(current_balance) if current_balance < 0 else Decimal("0.00")
+
+    return {
+        "phone": cleaned_phone,
+        "account_id": customer_account.id if customer_account else None,
+        "name": (
+            (customer_account.name if customer_account else None)
+            or (latest_order.customer_name if latest_order else None)
+            or ""
+        ),
+        "address": (
+            (customer_account.address if customer_account else None)
+            or (latest_order.delivery_address if latest_order else None)
+            or ""
+        ),
+        "area_id": latest_order.area_id if latest_order else None,
+        "area_name": latest_order.area.name if latest_order and latest_order.area else "",
+        "current_balance": current_balance,
+        "advance_available": advance_available,
+        "has_advance": advance_available > 0,
+        "has_outstanding": current_balance > 0,
+    }
+
+
+def apply_customer_advance_to_order(order, customer_account):
+    if not customer_account:
+        return Decimal("0.00")
+
+    current_balance = Decimal(str(customer_account.balance))
+    available_advance = abs(current_balance) if current_balance < 0 else Decimal("0.00")
+
+    if available_advance <= 0:
+        return Decimal("0.00")
+
+    order.refresh_from_db()
+    total_paid = order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    remaining = Decimal(str(order.total_amount)) - Decimal(str(total_paid))
+
+    if remaining <= 0:
+        return Decimal("0.00")
+
+    applied_amount = min(available_advance, remaining)
+
+    record_credit(
+        account=customer_account,
+        amount=applied_amount,
+        payment_type="SYSTEM",
+        reference=f"ORDER-{order.id}",
+        description=f"Customer advance adjusted on Order #{order.id}",
+    )
+
+    OrderPayment.objects.create(
+        order=order,
+        amount=applied_amount,
+        payment_type="ADVANCE",
+        cash_amount=Decimal("0.00"),
+        online_amount=Decimal("0.00"),
+    )
+
+    order.customer_account = customer_account
+
+    refreshed_paid = (total_paid + applied_amount)
+    order.payment_status = "PAID" if refreshed_paid >= Decimal(str(order.total_amount)) else "UNPAID"
+    order.save(update_fields=["customer_account", "payment_status"])
+
+    return applied_amount
 
 
 def _normalize_payment_breakdown(amount, payment_type, cash_amount=None, online_amount=None):
@@ -275,8 +367,6 @@ def update_order_details(
     order.delivery_boy = delivery_boy
 
     if order_type == "DINE_IN":
-        order.customer_name = None
-        order.customer_phone = None
         order.delivery_address = None
         order.area = None
         order.delivery_charge = Decimal("0.00")

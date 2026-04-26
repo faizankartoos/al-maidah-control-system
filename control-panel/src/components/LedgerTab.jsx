@@ -35,6 +35,16 @@ function createEmptyAccountForm() {
   };
 }
 
+function createEmptyVendorEntryForm() {
+  return {
+    account_id: "",
+    mode: "OWE",
+    amount: "",
+    payment_type: "CASH",
+    note: "",
+  };
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
@@ -446,7 +456,7 @@ function QuickDeleteModal({
         </div>
         <h3 className="mt-3 text-2xl font-semibold text-white">Delete {account.name}</h3>
         <p className="mt-3 text-sm leading-6 text-slate-400">
-          This permanently removes only the ledger account itself. If this account has linked transactions or orders, quick delete will be blocked so history stays untouched.
+          This removes the ledger account when it is clean. If transaction history exists, the account is archived safely instead, and linked orders are detached and kept untouched.
         </p>
 
         <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -698,6 +708,9 @@ export default function LedgerTab() {
     amount: "",
     payment_type: "CASH",
   });
+  const [vendorEntryForm, setVendorEntryForm] = useState(createEmptyVendorEntryForm);
+  const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [vendorReport, setVendorReport] = useState(null);
 
   const [accountReport, setAccountReport] = useState(null);
   const [viewingOrder, setViewingOrder] = useState(null);
@@ -706,8 +719,10 @@ export default function LedgerTab() {
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [loadingDailyReport, setLoadingDailyReport] = useState(false);
   const [savingAccount, setSavingAccount] = useState(false);
+  const [savingVendorEntry, setSavingVendorEntry] = useState(false);
   const [collectLoading, setCollectLoading] = useState(false);
   const [loadingAccountReport, setLoadingAccountReport] = useState(false);
+  const [loadingVendorReport, setLoadingVendorReport] = useState(false);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -822,6 +837,30 @@ export default function LedgerTab() {
     };
   }, [accounts]);
 
+  const vendorAccounts = useMemo(
+    () =>
+      accounts.filter(
+        (account) => account.account_type === "VENDOR" && account.is_active,
+      ),
+    [accounts],
+  );
+
+  useEffect(() => {
+    if (!selectedVendorId) {
+      return;
+    }
+
+    const stillExists = vendorAccounts.some(
+      (account) => String(account.id) === String(selectedVendorId),
+    );
+
+    if (!stillExists) {
+      setSelectedVendorId("");
+      setVendorReport(null);
+      setVendorEntryForm(createEmptyVendorEntryForm());
+    }
+  }, [selectedVendorId, vendorAccounts]);
+
   const topCards = dailyReport
     ? [
         {
@@ -854,6 +893,7 @@ export default function LedgerTab() {
 
   const tabConfig = [
     { key: "ACCOUNTS", label: "Accounts" },
+    { key: "VENDOR_LEDGER", label: "Vendor Ledger" },
     { key: "TRANSACTIONS", label: "Transactions" },
     { key: "REPORT", label: "Daily Report" },
   ];
@@ -861,6 +901,17 @@ export default function LedgerTab() {
   const resetAccountEditor = () => {
     setEditingAccount(null);
     setAccountForm(createEmptyAccountForm());
+  };
+
+  const startVendorAccountCreate = () => {
+    setActiveTab("ACCOUNTS");
+    setEditingAccount(null);
+    setAccountForm({
+      ...createEmptyAccountForm(),
+      account_type: "VENDOR",
+    });
+    setSuccess("");
+    setError("");
   };
 
   const requestAccountManagementUnlock = (callback) => {
@@ -1000,7 +1051,12 @@ export default function LedgerTab() {
         error: "",
         loading: false,
       });
-      setSuccess(`${response.data.account_name || "Ledger account"} deleted.`);
+      setSuccess(
+        response.data?.message
+          || `${response.data.account_name || "Ledger account"} ${
+            response.data?.action === "archived" ? "archived" : "deleted"
+          }.`,
+      );
     } catch (requestError) {
       setQuickDeleteState((current) => ({
         ...current,
@@ -1211,6 +1267,79 @@ export default function LedgerTab() {
       setError(getErrorMessage(requestError, "Collection failed."));
     } finally {
       setCollectLoading(false);
+    }
+  };
+
+  const loadVendorReport = async (accountId) => {
+    if (!accountId) {
+      setVendorReport(null);
+      return;
+    }
+
+    setLoadingVendorReport(true);
+    try {
+      const response = await api.get(`/accounts/${accountId}/`);
+      setVendorReport(response.data);
+    } finally {
+      setLoadingVendorReport(false);
+    }
+  };
+
+  const handleVendorSelection = async (accountId) => {
+    setSelectedVendorId(accountId);
+    setVendorEntryForm((current) => ({
+      ...current,
+      account_id: accountId,
+    }));
+    setError("");
+    await loadVendorReport(accountId);
+  };
+
+  const handleSaveVendorEntry = async () => {
+    setError("");
+    setSuccess("");
+
+    if (!vendorEntryForm.account_id) {
+      setError("Choose a vendor first.");
+      return;
+    }
+
+    if (!vendorEntryForm.amount || Number(vendorEntryForm.amount) <= 0) {
+      setError("Enter a valid vendor amount.");
+      return;
+    }
+
+    setSavingVendorEntry(true);
+    try {
+      await api.post("/ledger/vendor-entry/", vendorEntryForm);
+      setVendorEntryForm((current) => ({
+        ...current,
+        amount: "",
+        note: "",
+      }));
+      await refreshAll();
+      await loadVendorReport(vendorEntryForm.account_id);
+      setSuccess("Vendor ledger updated.");
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Failed to save vendor ledger entry."));
+    } finally {
+      setSavingVendorEntry(false);
+    }
+  };
+
+  const handleUndoVendorEntry = async (entryId) => {
+    setError("");
+    setSuccess("");
+
+    try {
+      await api.post(`/ledger/entries/${entryId}/undo/`);
+      await refreshAll();
+      if (selectedVendorId) {
+        await loadVendorReport(selectedVendorId);
+      }
+      setSuccess("Vendor transaction undone with full audit trail.");
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to undo this vendor transaction."));
     }
   };
 
@@ -1817,6 +1946,320 @@ export default function LedgerTab() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "VENDOR_LEDGER" && (
+        <div className="grid gap-6 xl:grid-cols-[0.96fr_1.04fr]">
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+              <div className="border-b border-slate-800 pb-4">
+                <div className="text-lg font-semibold text-white">Vendor Ledger Workspace</div>
+                <div className="mt-1 text-sm text-slate-400">
+                  Simple Khatabook-style vendor handling for staff: pick a vendor, record what you owe, record what you paid, and undo a wrong entry without losing audit history.
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-4">
+                <div className="flex justify-end">
+                  <button
+                    onClick={startVendorAccountCreate}
+                    className="rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/20"
+                  >
+                    Create Vendor Account
+                  </button>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm text-slate-300">Vendor Account</label>
+                  <select
+                    value={selectedVendorId}
+                    onChange={(event) => handleVendorSelection(event.target.value)}
+                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                  >
+                    <option value="">
+                      {vendorAccounts.length ? "Choose vendor" : "No vendor accounts yet"}
+                    </option>
+                    {vendorAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Action</label>
+                    <div className="grid gap-3 grid-cols-2">
+                      {[
+                        { value: "OWE", label: "Vendor Gave Goods", hint: "Adds to what we owe" },
+                        { value: "PAY", label: "We Paid Vendor", hint: "Reduces vendor due" },
+                      ].map((option) => {
+                        const selected = vendorEntryForm.mode === option.value;
+
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() =>
+                              setVendorEntryForm((current) => ({
+                                ...current,
+                                mode: option.value,
+                              }))
+                            }
+                            className={`rounded-2xl border px-4 py-3 text-left transition ${
+                              selected
+                                ? "border-emerald-500 bg-emerald-500/10"
+                                : "border-slate-800 bg-slate-900/60 hover:border-slate-600"
+                            }`}
+                          >
+                            <div className="font-semibold text-white">{option.label}</div>
+                            <div className="mt-1 text-xs text-slate-400">{option.hint}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Payment Type</label>
+                    <select
+                      value={vendorEntryForm.payment_type}
+                      onChange={(event) =>
+                        setVendorEntryForm((current) => ({
+                          ...current,
+                          payment_type: event.target.value,
+                        }))
+                      }
+                      disabled={vendorEntryForm.mode !== "PAY"}
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <option value="CASH">Cash</option>
+                      <option value="ONLINE">Online</option>
+                    </select>
+                    <div className="mt-2 text-xs text-slate-500">
+                      Payment type only matters when you are recording money paid to the vendor.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Amount</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={vendorEntryForm.amount}
+                      onChange={(event) =>
+                        setVendorEntryForm((current) => ({
+                          ...current,
+                          amount: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                      placeholder="0.00"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Note</label>
+                    <input
+                      type="text"
+                      value={vendorEntryForm.note}
+                      onChange={(event) =>
+                        setVendorEntryForm((current) => ({
+                          ...current,
+                          note: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                      placeholder="Example: Rice sack purchase"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <button
+                    onClick={handleSaveVendorEntry}
+                    disabled={savingVendorEntry}
+                    className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
+                  >
+                    <InlineButtonContent busy={savingVendorEntry} busyLabel="Saving...">
+                      Save Vendor Entry
+                    </InlineButtonContent>
+                  </button>
+                  {selectedVendorId ? (
+                    <button
+                      onClick={() => {
+                        const selectedVendor = vendorAccounts.find(
+                          (account) => String(account.id) === String(selectedVendorId),
+                        );
+                        if (selectedVendor) {
+                          handleOpenQuickDelete(selectedVendor);
+                        }
+                      }}
+                      className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 font-semibold text-rose-100 transition hover:bg-rose-500/20"
+                    >
+                      Delete Vendor Account
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Vendor Accounts</div>
+                <div className="mt-2 text-2xl font-semibold text-emerald-200">{vendorAccounts.length}</div>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Selected Balance</div>
+                <div className="mt-2 text-2xl font-semibold text-white">
+                  {vendorReport ? formatCurrency(vendorReport.summary.current_balance) : formatCurrency(0)}
+                </div>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Transactions</div>
+                <div className="mt-2 text-2xl font-semibold text-sky-200">
+                  {vendorReport ? vendorReport.summary.transaction_count : 0}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+                <div>
+                  <div className="text-lg font-semibold text-white">Selected Vendor Snapshot</div>
+                  <div className="mt-1 text-sm text-slate-400">
+                    Open a vendor to see the live due, recent notes, and undo-ready manual entries.
+                  </div>
+                </div>
+                {vendorReport ? (
+                  <button
+                    onClick={() => openAccountReport(vendorReport.account.id)}
+                    className="rounded-2xl border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:text-white"
+                  >
+                    View Full Ledger
+                  </button>
+                ) : null}
+              </div>
+
+              {!selectedVendorId ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  <div>Choose a vendor to open the ledger workspace.</div>
+                  {!vendorAccounts.length ? (
+                    <button
+                      onClick={startVendorAccountCreate}
+                      className="mt-4 rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/20"
+                    >
+                      Create Your First Vendor
+                    </button>
+                  ) : null}
+                </div>
+              ) : loadingVendorReport ? (
+                <PanelLoader
+                  eyebrow="Vendor Ledger"
+                  label="Loading vendor activity..."
+                  description="Pulling vendor balance, manual dues, payments, and undo-ready entries."
+                />
+              ) : vendorReport ? (
+                <>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Vendor</div>
+                      <div className="mt-2 text-xl font-semibold text-white">{vendorReport.account.name}</div>
+                      <div className="mt-2 text-sm text-slate-400">
+                        {vendorReport.account.contact_number || "No phone"} • {vendorReport.account.address || "No address"}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Due</div>
+                      <div className="mt-2 text-2xl font-semibold text-amber-200">
+                        {formatCurrency(vendorReport.summary.current_balance)}
+                      </div>
+                      <div className="mt-2 text-sm text-slate-400">
+                        Positive means the restaurant still owes this vendor.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                        <tr>
+                          <th className="pb-3 pr-4">Date</th>
+                          <th className="pb-3 pr-4">Action</th>
+                          <th className="pb-3 pr-4">Amount</th>
+                          <th className="pb-3 pr-4">Payment</th>
+                          <th className="pb-3 pr-4">Note</th>
+                          <th className="pb-3 pr-4">Running</th>
+                          <th className="pb-3">Undo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {vendorReport.transactions.length ? (
+                          vendorReport.transactions
+                            .slice()
+                            .reverse()
+                            .map((entry) => (
+                              <tr key={entry.id} className="border-t border-slate-800 align-top">
+                                <td className="py-3 pr-4 text-slate-300">{formatDateTime(entry.date)}</td>
+                                <td className="py-3 pr-4">
+                                  <div className="font-semibold text-white">
+                                    {entry.reference === "VENDOR-DUE"
+                                      ? "We Owe Vendor"
+                                      : entry.reference === "VENDOR-PAY"
+                                        ? "We Paid Vendor"
+                                        : entry.reference?.startsWith("UNDO-ENTRY-")
+                                          ? "Undo Entry"
+                                          : entry.entry_type}
+                                  </div>
+                                  <div className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">
+                                    {entry.reference || "-"}
+                                  </div>
+                                </td>
+                                <td className="py-3 pr-4 font-semibold text-white">{formatCurrency(entry.amount)}</td>
+                                <td className="py-3 pr-4 text-slate-300">{entry.payment_type}</td>
+                                <td className="py-3 pr-4 text-slate-400">{entry.description || "-"}</td>
+                                <td className="py-3 pr-4 font-semibold text-amber-200">
+                                  {formatCurrency(entry.running_balance)}
+                                </td>
+                                <td className="py-3">
+                                  {entry.can_undo ? (
+                                    <button
+                                      onClick={() => handleUndoVendorEntry(entry.id)}
+                                      className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-amber-100 transition hover:bg-amber-500/20"
+                                    >
+                                      Undo
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs text-slate-500">Locked</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                        ) : (
+                          <tr>
+                            <td colSpan="7" className="py-10 text-center text-slate-500">
+                              No vendor transactions yet.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No vendor report available right now.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

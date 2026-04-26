@@ -15,6 +15,7 @@ from .views import (
     ExternalOrdersAPIView,
     ExternalOrderDecisionAPIView,
     AreaListAPIView,
+    CustomerLookupAPIView,
 )
 
 urlpatterns = [
@@ -34,6 +35,7 @@ urlpatterns = [
     path("orders/display/", OrderDisplayAPIView.as_view()),
     path("orders/<int:order_id>/start/",StartScheduledOrderAPIView.as_view()),
     path("orders/areas/", AreaListAPIView.as_view()),
+    path("orders/customers/", CustomerLookupAPIView.as_view()),
     
 
 ]

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import api, { buildApiUrl } from "../services/api";
 import AreaAutocomplete from "./AreaAutocomplete";
+import CustomerPhoneAutocomplete from "./CustomerPhoneAutocomplete";
 
 const ORDER_TYPE_META = {
   DINE_IN: {
@@ -45,6 +46,7 @@ export default function OrdersTab({ externalMode = false }) {
   `
   
   const [toast,setToast] = useState(null)
+  const [toastTimerId, setToastTimerId] = useState(null)
   const [animatingId,setAnimatingId] = useState(null)
   const [showTypes,setShowTypes] = useState(false)
   const [orderType,setOrderType] = useState(null)
@@ -61,6 +63,8 @@ export default function OrdersTab({ externalMode = false }) {
   const [address,setAddress] = useState("")
   const [selectedAreaId, setSelectedAreaId] = useState("")
   const [selectedAreaName, setSelectedAreaName] = useState("")
+  const [matchedCustomer, setMatchedCustomer] = useState(null)
+  const [applyCustomerAdvance, setApplyCustomerAdvance] = useState(false)
   const [orderNote,setOrderNote] = useState("")
   const [requireAcceptance, setRequireAcceptance] = useState(false)
 
@@ -85,6 +89,8 @@ export default function OrdersTab({ externalMode = false }) {
   const [showPaymentModal,setShowPaymentModal] = useState(false)
   const [showMethodModal,setShowMethodModal] = useState(false)
   const [showAmountModal,setShowAmountModal] = useState(false)
+  const [showDeliveryChargePrompt,setShowDeliveryChargePrompt] = useState(false)
+  const [deliveryChargePromptValue,setDeliveryChargePromptValue] = useState("")
 
   const [paymentMethod,setPaymentMethod] = useState(null)
   const [amountReceived,setAmountReceived] = useState("")
@@ -131,14 +137,48 @@ export default function OrdersTab({ externalMode = false }) {
   },[orderType])
 
 
-  function showToast(message,type="success"){
+  function showToast(message,type="success",options = {}){
 
-  setToast({message,type})
+  if(toastTimerId){
+    window.clearTimeout(toastTimerId)
+  }
 
-  setTimeout(()=>{
+  setToast({message,type,position: options.position || "top-right"})
+
+  const timerId = window.setTimeout(()=>{
     setToast(null)
+    setToastTimerId(null)
   },2500)
 
+  setToastTimerId(timerId)
+
+  }
+
+  function handlePhoneMatchChange(customer){
+    setMatchedCustomer(customer)
+
+    if(!customer?.has_advance){
+      setApplyCustomerAdvance(false)
+    }
+  }
+
+  function handleSelectCustomer(customer){
+    setMatchedCustomer(customer)
+
+    if(!name.trim() && customer?.name){
+      setName(customer.name)
+    }
+
+    if(orderType === "DELIVERY"){
+      if(!address.trim() && customer?.address){
+        setAddress(customer.address)
+      }
+
+      if(!selectedAreaId && customer?.area_id){
+        setSelectedAreaId(String(customer.area_id))
+        setSelectedAreaName(customer.area_name || "")
+      }
+    }
   }
 
 
@@ -207,10 +247,15 @@ export default function OrdersTab({ externalMode = false }) {
     (sum,i)=>sum+i.price*i.qty,0
   )
 
-  const total = subtotal - discount + deliveryCharge
+  const discountAmount = Number(discount || 0)
+  const deliveryChargeAmount = Number(deliveryCharge || 0)
+  const total = subtotal - discountAmount + deliveryChargeAmount
   const totalItems = orderItems.reduce((sum,i)=>sum+i.qty,0)
-  const shouldShowPhoneField = orderType === "TAKEAWAY" || orderType === "DELIVERY" || isScheduled
-  const shouldShowNameField = orderType === "TAKEAWAY" || orderType === "DELIVERY" || isScheduled
+  const shouldShowPhoneField = Boolean(orderType)
+  const shouldShowNameField = Boolean(orderType)
+  const availableAdvance = Number(matchedCustomer?.advance_available || 0)
+  const appliedAdvancePreview = applyCustomerAdvance ? Math.min(availableAdvance, total) : 0
+  const finalPayableAfterAdvance = Math.max(total - appliedAdvancePreview, 0)
   const catalogProducts = products
     .filter(p => !selectedCategory || p.category===selectedCategory)
     .filter(p => {
@@ -246,6 +291,8 @@ export default function OrdersTab({ externalMode = false }) {
   setAddress("")
   setSelectedAreaId("")
   setSelectedAreaName("")
+  setMatchedCustomer(null)
+  setApplyCustomerAdvance(false)
   setOrderNote("")
   setRequireAcceptance(false)
 
@@ -255,6 +302,8 @@ export default function OrdersTab({ externalMode = false }) {
   setOrderItems([])
   setDiscount("")
   setDeliveryCharge("")
+  setShowDeliveryChargePrompt(false)
+  setDeliveryChargePromptValue("")
   setAmountReceived("")
   setPaymentMethod(null)
   setPaymentCashAmount("")
@@ -296,10 +345,11 @@ export default function OrdersTab({ externalMode = false }) {
       name:name,
       address:address,
       area_id: orderType === "DELIVERY" ? selectedAreaId || null : null,
+      apply_customer_advance: externalMode && requireAcceptance ? false : applyCustomerAdvance,
       order_note: orderNote.trim() || null,
 
-      discount:discount,
-      delivery_charge:deliveryCharge,
+      discount:discountAmount,
+      delivery_charge:deliveryChargeAmount,
       submission_source: externalMode ? "EXTERNAL" : "INTERNAL",
       require_acceptance: externalMode ? requireAcceptance : false,
 
@@ -321,6 +371,8 @@ export default function OrdersTab({ externalMode = false }) {
 
         if (data.acceptance_status === "PENDING") {
           showToast("External order submitted for acceptance","success")
+        } else if (Number(data.advance_applied || 0) > 0) {
+          showToast(`Order placed. Rs ${formatMoney(data.advance_applied)} adjusted from customer advance.`, "success")
         } else {
           showToast("Order placed","success")
         }
@@ -352,8 +404,29 @@ export default function OrdersTab({ externalMode = false }) {
     return
   }
 
+  proceedToPlacementFlow()
+
+  }
+
+  function proceedToPlacementFlow(skipDeliveryChargeCheck = false){
+
+  if(
+    orderType === "DELIVERY" &&
+    !skipDeliveryChargeCheck &&
+    Number(deliveryCharge || 0) === 0
+  ){
+    setDeliveryChargePromptValue("")
+    setShowDeliveryChargePrompt(true)
+    return
+  }
+
   if(orderType === "DELIVERY"){
     setShowDeliveryModal(true)
+    return
+  }
+
+  if(finalPayableAfterAdvance <= 0){
+    submitOrder("PAY_LATER",null,0)
     return
   }
 
@@ -388,17 +461,17 @@ export default function OrdersTab({ externalMode = false }) {
       }
     }
 
-    if(amount < total){
+    if(amount < finalPayableAfterAdvance){
       showToast("Full payment required. Use Pay Later instead.","warning")
       return
     }
 
-    if(paymentMethod === "ONLINE" && amount > total){
+    if(paymentMethod === "ONLINE" && amount > finalPayableAfterAdvance){
       showToast("Online payment cannot exceed the total bill amount","warning")
       return
     }
 
-    const changeAmount = amount - total
+    const changeAmount = amount - finalPayableAfterAdvance
 
     if(paymentMethod === "MIXED" && changeAmount > cashAmount){
       showToast("Change can only be returned from the cash portion","warning")
@@ -425,11 +498,17 @@ export default function OrdersTab({ externalMode = false }) {
   }
 
         const ToastUI = toast && (
-        <div className="fixed top-6 right-6 z-50">
-          <div className={`px-5 py-3 rounded-lg shadow-lg text-white font-semibold
-            ${toast.type === "error" ? "bg-red-600" :
-            toast.type === "warning" ? "bg-yellow-500" :
-            "bg-green-600"}
+        <div
+          className={
+            toast.position === "center"
+              ? "fixed inset-0 z-50 flex items-center justify-center px-4 pointer-events-none"
+              : "fixed top-6 right-6 z-50"
+          }
+        >
+          <div className={`max-w-sm px-5 py-3 rounded-lg shadow-lg font-semibold text-center
+            ${toast.type === "error" ? "bg-red-600 text-white" :
+            toast.type === "warning" ? "bg-yellow-500 text-slate-950" :
+            "bg-green-600 text-white"}
           `}>
             {toast.message}
           </div>
@@ -486,6 +565,11 @@ onClick={()=>{
 
 	  setShowDeliveryModal(false)
 
+    if(finalPayableAfterAdvance <= 0){
+      submitOrder("PAY_LATER",null,0)
+      return
+    }
+
 	  setShowPaymentModal(true)
 
 }}
@@ -501,12 +585,92 @@ Assign Delivery Boy
 	</div>
 	)
 
+	const DeliveryChargePrompt = showDeliveryChargePrompt && (
+<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 px-4">
+
+  <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-slate-950 p-6 text-white shadow-[0_24px_60px_rgba(15,23,42,0.45)]">
+
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <div className="text-xs uppercase tracking-[0.28em] text-amber-300">Delivery Charge Check</div>
+        <h3 className="mt-2 text-xl font-semibold">Delivery charge is set to Rs 0.00</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Add a delivery charge now, or continue only if this order should be treated as free delivery.
+        </p>
+      </div>
+
+      <button
+        onClick={()=>setShowDeliveryChargePrompt(false)}
+        className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div className="mt-5 space-y-4">
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">Delivery Charge</label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={deliveryChargePromptValue}
+          onChange={(e)=>setDeliveryChargePromptValue(e.target.value)}
+          placeholder="Enter delivery charge"
+          className={inputStyle}
+        />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          onClick={()=>{
+            const parsedValue = Number(deliveryChargePromptValue)
+
+            if(!Number.isFinite(parsedValue) || parsedValue <= 0){
+              showToast(
+                "Enter a delivery charge above 0 or choose Free Delivery.",
+                "warning",
+                { position: "center" }
+              )
+              return
+            }
+
+            setDeliveryCharge(parsedValue)
+            setShowDeliveryChargePrompt(false)
+            setDeliveryChargePromptValue("")
+            proceedToPlacementFlow(true)
+          }}
+          className="rounded-xl bg-amber-500 px-4 py-3 font-semibold text-slate-950 transition hover:brightness-105"
+        >
+          Apply Delivery Charge
+        </button>
+
+        <button
+          onClick={()=>{
+            setDeliveryCharge(0)
+            setShowDeliveryChargePrompt(false)
+            setDeliveryChargePromptValue("")
+            proceedToPlacementFlow(true)
+          }}
+          className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-white transition hover:border-slate-500 hover:bg-slate-800"
+        >
+          Free Delivery
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+	)
+
 	  if(!decisionConfirmed){
 
 	  return(
 	  <div className="space-y-6 text-white">
 	    {ToastUI}
 	    {DeliveryModal}
+      {DeliveryChargePrompt}
 
 	    <div className="rounded-[28px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.96),_rgba(15,23,42,0.84))] p-6 shadow-[0_24px_60px_rgba(15,23,42,0.45)]">
 	      <div className="flex flex-col gap-4 border-b border-slate-800 pb-6 md:flex-row md:items-end md:justify-between">
@@ -626,15 +790,16 @@ Assign Delivery Boy
 
 	              {shouldShowPhoneField && (
 	                <div>
-	                  <label className="mb-2 block text-sm font-medium text-slate-300">
-	                    Phone Number
-	                  </label>
-	                  <input
-	                    placeholder="Enter phone number"
-	                    value={phone}
-	                    onChange={e=>setPhone(e.target.value)}
-	                    className={inputStyle}
-	                  />
+                    <CustomerPhoneAutocomplete
+                      value={phone}
+                      onChange={(nextPhone) => {
+                        setPhone(nextPhone)
+                      }}
+                      onSelectCustomer={handleSelectCustomer}
+                      onExactMatchChange={handlePhoneMatchChange}
+                      label={orderType === "DINE_IN" ? "Phone Number (Optional)" : "Phone Number"}
+                      helperText="Start typing to match an existing customer phone. New numbers still work normally."
+                    />
 	                </div>
 	              )}
 
@@ -652,12 +817,12 @@ Assign Delivery Boy
 	                        setSelectedAreaId("")
 	                        setSelectedAreaName("")
 	                      }}
-	                      helperText="This is the standard delivery zone. After selecting it, write the exact house, lane, or landmark below."
+	                      helperText="This is the required delivery zone. The full address below is optional for house, lane, or landmark details."
 	                    />
 	                  </div>
 	                  <div className="md:col-span-2">
 	                    <label className="mb-2 block text-sm font-medium text-slate-300">
-	                      Delivery Address
+	                      Delivery Address <span className="text-slate-500">(Optional)</span>
 	                    </label>
 	                    <textarea
 	                      placeholder="Enter full delivery address"
@@ -799,8 +964,13 @@ Assign Delivery Boy
 
   if(orderType === "DELIVERY"){
 
-    if(!phone || !address || !selectedAreaId){
-      showToast("Phone, area, and address required for delivery order","warning")
+    if(!phone){
+      showToast("Phone number required for delivery order","warning")
+      return false
+    }
+
+    if(!selectedAreaId){
+      showToast("Select area for delivery order is required","warning",{ position: "center" })
       return false
     }
 
@@ -845,6 +1015,7 @@ Assign Delivery Boy
   <>
     {ToastUI}
     {DeliveryModal}
+    {DeliveryChargePrompt}
 
     
 
@@ -892,7 +1063,7 @@ Assign Delivery Boy
 	              {orderType === "DINE_IN"
 	                ? (useCustomTable ? customTable : tableNumber) || "No table selected"
 	                : orderType === "DELIVERY"
-	                  ? (selectedAreaName ? `${selectedAreaName} • ${address || "Address pending"}` : (address || "Area and address pending"))
+	                  ? (selectedAreaName ? `${selectedAreaName} • ${address || "Detailed address optional"}` : "Area pending")
 	                  : "Counter pickup"}
 	            </div>
 	          </div>
@@ -1147,6 +1318,57 @@ Assign Delivery Boy
 	                </div>
 	              )}
 
+                {matchedCustomer ? (
+                  <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold text-sky-100">
+                          Existing customer matched
+                        </div>
+                        <div className="mt-1 text-sm text-sky-50/85">
+                          {matchedCustomer.name || "Customer"} • {matchedCustomer.phone}
+                        </div>
+                        {matchedCustomer.has_advance ? (
+                          <div className="mt-2 text-sm text-emerald-200">
+                            Advance available: Rs {formatMoney(matchedCustomer.advance_available)}
+                          </div>
+                        ) : matchedCustomer.has_outstanding ? (
+                          <div className="mt-2 text-sm text-amber-200">
+                            Current due in ledger: Rs {formatMoney(matchedCustomer.current_balance)}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm text-slate-300">
+                            Existing customer history found. No advance is available right now.
+                          </div>
+                        )}
+                      </div>
+
+                      {matchedCustomer.has_advance ? (
+                        <label className="inline-flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-500/20 bg-slate-950/40 px-4 py-3 text-sm font-medium text-slate-100">
+                          <input
+                            type="checkbox"
+                            checked={applyCustomerAdvance && !(externalMode && requireAcceptance)}
+                            disabled={externalMode && requireAcceptance}
+                            onChange={(event)=>setApplyCustomerAdvance(event.target.checked)}
+                            className="h-4 w-4 accent-emerald-500"
+                          />
+                          Adjust Advance
+                        </label>
+                      ) : null}
+                    </div>
+
+                    {matchedCustomer.has_advance ? (
+                      <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm text-slate-300">
+                        {externalMode && requireAcceptance
+                          ? "Advance adjustment stays disabled while Require Acceptance is on, so no financial value is applied before the order is accepted."
+                          : applyCustomerAdvance
+                            ? `This order will auto-adjust Rs ${formatMoney(appliedAdvancePreview)} from the customer's advance. New payable amount: Rs ${formatMoney(finalPayableAfterAdvance)}.`
+                            : "You can leave advance unchecked if the staff does not want to use customer advance on this order."}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
 	              <div className="rounded-2xl bg-gradient-to-r from-emerald-500 to-green-500 p-4 text-white shadow-lg shadow-emerald-900/30">
 	                <div className="flex items-center justify-between text-sm uppercase tracking-[0.25em] text-emerald-50/80">
 	                  <span>Total</span>
@@ -1154,6 +1376,11 @@ Assign Delivery Boy
 	                </div>
 	                <div className="mt-2 text-3xl font-semibold">Rs {formatMoney(total)}</div>
 	                <div className="mt-1 text-sm text-emerald-50/90">Subtotal Rs {formatMoney(subtotal)}</div>
+                  {applyCustomerAdvance && appliedAdvancePreview > 0 ? (
+                    <div className="mt-2 text-sm font-medium text-emerald-50">
+                      Advance adjusted: Rs {formatMoney(appliedAdvancePreview)} • Payable now: Rs {formatMoney(finalPayableAfterAdvance)}
+                    </div>
+                  ) : null}
 	              </div>
 
 	              <button
@@ -1218,7 +1445,7 @@ Assign Delivery Boy
             <button
               onClick={()=>{
                 setPaymentMethod("CASH")
-                setAmountReceived(total)
+                setAmountReceived(finalPayableAfterAdvance)
                 setPaymentCashAmount("")
                 setPaymentOnlineAmount("")
                 setShowMethodModal(false)
@@ -1232,7 +1459,7 @@ Assign Delivery Boy
             <button
               onClick={()=>{
                 setPaymentMethod("ONLINE")
-                setAmountReceived(total)
+                setAmountReceived(finalPayableAfterAdvance)
                 setPaymentCashAmount("")
                 setPaymentOnlineAmount("")
                 setShowMethodModal(false)
@@ -1246,7 +1473,7 @@ Assign Delivery Boy
             <button
               onClick={()=>{
                 setPaymentMethod("MIXED")
-                setAmountReceived(total)
+                setAmountReceived(finalPayableAfterAdvance)
                 setPaymentCashAmount("")
                 setPaymentOnlineAmount("")
                 setShowMethodModal(false)
@@ -1271,7 +1498,7 @@ Assign Delivery Boy
 
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
 
-            <div className="mb-3">Total: ₹{total}</div>
+            <div className="mb-3">Total Payable: ₹{formatMoney(finalPayableAfterAdvance)}</div>
 
             <input
               type="number"

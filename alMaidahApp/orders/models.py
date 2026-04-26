@@ -279,6 +279,7 @@ class OrderPayment(models.Model):
         ("CASH", "Cash"),
         ("ONLINE", "Online"),
         ("MIXED", "Mixed"),
+        ("ADVANCE", "Advance"),
     )
 
     order = models.ForeignKey(
