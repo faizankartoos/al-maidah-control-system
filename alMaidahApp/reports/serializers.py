@@ -37,6 +37,13 @@ class DataInsightsRequestSerializer(DateRangeSerializer):
         return value
 
 
+class FinancialDrilldownRequestSerializer(DateRangeSerializer):
+    metric = serializers.ChoiceField(
+        choices=("revenue", "cogs", "expenses"),
+        required=True,
+    )
+
+
 class SalesReportSerializer(serializers.Serializer):
     summary = serializers.DictField()
     order_type_breakdown = serializers.ListField(required=False)
@@ -90,3 +97,10 @@ class DataInsightsReportSerializer(serializers.Serializer):
     charts = serializers.DictField()
     rankings = serializers.DictField()
     insights = serializers.DictField()
+
+
+class FinancialDrilldownReportSerializer(serializers.Serializer):
+    metric = serializers.CharField()
+    date_range = serializers.DictField()
+    summary = serializers.DictField()
+    items = serializers.ListField()

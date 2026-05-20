@@ -108,6 +108,130 @@ function formatDays(value) {
   return `${formatNumber(value)} day${Number(value) === 1 ? "" : "s"}`;
 }
 
+function getLocalDateFromIso(value) {
+  if (!value) {
+    return null;
+  }
+
+  return new Date(`${value}T00:00:00`);
+}
+
+function toIsoDate(value) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(value, days) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getWeekStart(value) {
+  const current = new Date(value);
+  const day = current.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  current.setDate(current.getDate() + diff);
+  return current;
+}
+
+function formatWeekLabel(start, end) {
+  const startLabel = start.toLocaleDateString("en-IN", {
+    month: "short",
+    day: "numeric",
+  });
+  const endLabel = end.toLocaleDateString("en-IN", {
+    month: start.getMonth() === end.getMonth() ? undefined : "short",
+    day: "numeric",
+  });
+  return `${startLabel} - ${endLabel}`;
+}
+
+function formatMonthLabel(date) {
+  return date.toLocaleDateString("en-IN", {
+    month: "short",
+    year: "2-digit",
+  });
+}
+
+function buildFinancialTimelineRows(rows, granularity) {
+  const grouped = new Map();
+
+  (rows || []).forEach((row) => {
+    const rowDate = getLocalDateFromIso(row.date);
+    if (!rowDate) {
+      return;
+    }
+
+    let key = row.date;
+    let label = formatDateCompact(row.date);
+    let longLabel = formatDate(row.date);
+    let startDate = rowDate;
+    let endDate = rowDate;
+
+    if (granularity === "week") {
+      startDate = getWeekStart(rowDate);
+      endDate = addDays(startDate, 6);
+      key = toIsoDate(startDate);
+      label = `Wk ${startDate.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`;
+      longLabel = formatWeekLabel(startDate, endDate);
+    } else if (granularity === "month") {
+      startDate = new Date(rowDate.getFullYear(), rowDate.getMonth(), 1);
+      endDate = new Date(rowDate.getFullYear(), rowDate.getMonth() + 1, 0);
+      key = `${rowDate.getFullYear()}-${String(rowDate.getMonth() + 1).padStart(2, "0")}`;
+      label = formatMonthLabel(startDate);
+      longLabel = startDate.toLocaleDateString("en-IN", {
+        month: "long",
+        year: "numeric",
+      });
+    }
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        label,
+        longLabel,
+        startDate,
+        endDate,
+        rangeStartDate: rowDate,
+        rangeEndDate: rowDate,
+        revenue: 0,
+        cogs: 0,
+        expenses: 0,
+        profit: 0,
+        dayCount: 0,
+      });
+    }
+
+    const bucket = grouped.get(key);
+    if (rowDate < bucket.rangeStartDate) {
+      bucket.rangeStartDate = rowDate;
+    }
+    if (rowDate > bucket.rangeEndDate) {
+      bucket.rangeEndDate = rowDate;
+    }
+    bucket.revenue += Number(row.revenue || 0);
+    bucket.cogs += Number(row.cogs || 0);
+    bucket.expenses += Number(row.expenses || 0);
+    bucket.profit += Number(row.profit || 0);
+    bucket.dayCount += 1;
+  });
+
+  return Array.from(grouped.values())
+    .sort((left, right) => left.startDate - right.startDate)
+    .map((row) => ({
+      ...row,
+      longLabel:
+        granularity === "day"
+          ? formatDate(toIsoDate(row.rangeStartDate))
+          : granularity === "week"
+            ? formatWeekLabel(row.rangeStartDate, row.rangeEndDate)
+            : `${formatDate(toIsoDate(row.rangeStartDate))} to ${formatDate(toIsoDate(row.rangeEndDate))}`,
+    }));
+}
+
 function getErrorMessage(error, fallback) {
   const data = error?.response?.data;
 
@@ -535,6 +659,119 @@ function ProfitUnlockModal({
   );
 }
 
+function FinancialDrilldownModal({
+  open,
+  title,
+  loading,
+  error,
+  report,
+  onClose,
+}) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-[30px] border border-slate-800 bg-slate-950 shadow-[0_25px_80px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-6 py-5">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.34em] text-cyan-300">
+              Timeline Drilldown
+            </div>
+            <h3 className="mt-3 text-2xl font-semibold text-white">{title}</h3>
+            {report?.date_range ? (
+              <p className="mt-2 text-sm text-slate-400">
+                {formatDate(report.date_range.from_date)} to {formatDate(report.date_range.to_date)}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          {loading ? (
+            <EmptyBlock text="Loading the register behind this bar..." />
+          ) : error ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : report ? (
+            <div className="space-y-5">
+              <div className="grid gap-4 md:grid-cols-3">
+                <MetricCard
+                  title="Total"
+                  value={formatCurrency(report.summary?.total_amount)}
+                  hint={`${formatNumber(report.summary?.record_count)} records`}
+                  tone="cyan"
+                />
+                {report.metric === "cogs" ? (
+                  <MetricCard
+                    title="Total Quantity"
+                    value={formatNumber(report.summary?.total_quantity)}
+                    hint="Stock moved out in this selected time slice"
+                    tone="amber"
+                  />
+                ) : null}
+                {report.metric === "expenses" ? (
+                  <MetricCard
+                    title="Categories Used"
+                    value={formatNumber(report.summary?.categories_used)}
+                    hint="Distinct expense categories in this selected time slice"
+                    tone="violet"
+                  />
+                ) : null}
+              </div>
+
+              {report.items?.length ? (
+                <div className="space-y-3">
+                  {report.items.map((item) => (
+                    <div
+                      key={`${report.metric}-${item.id}`}
+                      className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-base font-semibold text-white">{item.title}</div>
+                          <div className="mt-1 text-sm text-slate-400">{item.subtitle}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-lg font-semibold text-white">{formatCurrency(item.amount)}</div>
+                          <div className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">
+                            {item.occurred_at ? formatDateTime(item.occurred_at) : "-"}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-300">
+                        {item.meta ? <span>{item.meta}</span> : null}
+                        {item.status ? (
+                          <span className="rounded-full border border-slate-700 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-300">
+                            {item.status}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyBlock text="No records were found for this selected bar." />
+              )}
+            </div>
+          ) : (
+            <EmptyBlock text="Click a bar to inspect the records behind that number." />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConsumptionPulseChart({ data, selectedDate, onSelect, unit }) {
   const rows = data || [];
   const selectedRow = rows.find((row) => row.date === selectedDate) || rows[rows.length - 1];
@@ -703,6 +940,137 @@ function ConsumptionTimeline({ timeline, unit }) {
   );
 }
 
+function FinancialTimelineChart({
+  rows,
+  granularity,
+  onGranularityChange,
+  selectedKey,
+  onSelect,
+  onBarClick,
+}) {
+  const selectedRow = rows.find((row) => row.key === selectedKey) || rows[rows.length - 1];
+  const maxValue = Math.max(
+    1,
+    ...rows.flatMap((row) => [Number(row.revenue || 0), Number(row.cogs || 0), Number(row.expenses || 0)]),
+  );
+
+  return (
+    <SectionCard
+      title="Financial Timeline"
+      eyebrow="Trend Line"
+      description="Each point can represent a day, week, or month. Every point shows three bars: revenue, COGS, and expenses for that chosen time slice."
+    >
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+          <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Selected Point</div>
+          <div className="mt-2 text-xl font-semibold text-white">
+            {selectedRow ? selectedRow.longLabel : "No data point selected"}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <StatusPill label={`Revenue ${formatCurrency(selectedRow?.revenue)}`} tone="emerald" />
+            <StatusPill label={`COGS ${formatCurrency(selectedRow?.cogs)}`} tone="amber" />
+            <StatusPill label={`Expenses ${formatCurrency(selectedRow?.expenses)}`} tone="rose" />
+            <StatusPill
+              label={`Profit ${formatCurrency(selectedRow?.profit)}`}
+              tone={Number(selectedRow?.profit || 0) >= 0 ? "cyan" : "rose"}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: "day", label: "Days" },
+            { key: "week", label: "Weeks" },
+            { key: "month", label: "Months" },
+          ].map((option) => {
+            const active = granularity === option.key;
+            return (
+              <button
+                key={option.key}
+                onClick={() => onGranularityChange(option.key)}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  active
+                    ? "border-cyan-400 bg-cyan-400 text-slate-950"
+                    : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-slate-500"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-5 mb-5 flex flex-wrap gap-3 text-xs uppercase tracking-[0.22em] text-slate-400">
+        {moneyFlowBars.map((bar) => (
+          <div key={bar.key} className="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/70 px-3 py-2">
+            <span className={`inline-flex h-3 w-3 rounded-full ${bar.color}`} />
+            {bar.label}
+          </div>
+        ))}
+      </div>
+
+      {rows.length ? (
+        <div className="overflow-x-auto pb-2">
+          <div className="relative min-w-max px-2 pt-3">
+            <div className="absolute left-2 right-2 top-[10.8rem] h-px bg-slate-700/80" />
+            <div className="flex items-start gap-4">
+              {rows.map((row) => {
+                const isSelected = row.key === selectedKey;
+                return (
+                  <div
+                    key={row.key}
+                    className={`w-[92px] shrink-0 rounded-[24px] border px-3 py-3 text-center transition ${
+                      isSelected
+                        ? "border-cyan-400 bg-cyan-500/10"
+                        : "border-slate-800 bg-slate-900/60 hover:border-slate-600"
+                    }`}
+                  >
+                    <div className="mx-auto flex h-36 items-end justify-center gap-1">
+                      {moneyFlowBars.map((bar) => {
+                        const value = Number(row?.[bar.key] || 0);
+                        const height = `${Math.max((value / maxValue) * 100, value > 0 ? 7 : 0)}%`;
+                        return (
+                          <button key={bar.key} type="button" onClick={() => onBarClick(row, bar.key)} className="flex h-full w-4 items-end">
+                            <div
+                              className={`w-full rounded-t-2xl ${bar.color} shadow-[0_12px_24px_rgba(15,23,42,0.28)] transition hover:brightness-110`}
+                              style={{ height }}
+                              title={`${bar.label}: ${formatCurrency(value)}`}
+                            />
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button type="button" onClick={() => onSelect(row.key)} className="mt-4 block w-full">
+                      <div className="relative flex justify-center">
+                        <span
+                          className={`inline-flex h-3.5 w-3.5 rounded-full border-2 ${
+                            isSelected
+                              ? "border-cyan-200 bg-cyan-400"
+                              : "border-slate-500 bg-slate-900"
+                          }`}
+                        />
+                      </div>
+                      <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
+                        {row.label}
+                      </div>
+                      <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                        {granularity === "day" ? "1 day" : `${formatNumber(row.dayCount)} days`}
+                      </div>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <EmptyBlock text="There is not enough financial movement in this range to build the timeline yet." />
+      )}
+    </SectionCard>
+  );
+}
+
 export default function ReportsTab() {
   const [fromDate, setFromDate] = useState(getMonthStart());
   const [toDate, setToDate] = useState(today);
@@ -722,6 +1090,13 @@ export default function ReportsTab() {
   const [consumptionLoading, setConsumptionLoading] = useState(false);
   const [consumptionError, setConsumptionError] = useState("");
   const [selectedMovementDate, setSelectedMovementDate] = useState("");
+  const [timelineGranularity, setTimelineGranularity] = useState("week");
+  const [selectedTimelineKey, setSelectedTimelineKey] = useState("");
+  const [showTimelineDrilldown, setShowTimelineDrilldown] = useState(false);
+  const [timelineDrilldownTitle, setTimelineDrilldownTitle] = useState("");
+  const [timelineDrilldownLoading, setTimelineDrilldownLoading] = useState(false);
+  const [timelineDrilldownError, setTimelineDrilldownError] = useState("");
+  const [timelineDrilldownReport, setTimelineDrilldownReport] = useState(null);
 
   const clearConsumptionAnalysis = () => {
     setConsumptionReport(null);
@@ -797,6 +1172,40 @@ export default function ReportsTab() {
     }
   };
 
+  const loadTimelineDrilldown = async (row, barKey) => {
+    const metricTitleMap = {
+      revenue: "Revenue Orders",
+      cogs: "COGS / Stock-Out Register",
+      expenses: "Expense Register",
+    };
+
+    try {
+      setShowTimelineDrilldown(true);
+      setTimelineDrilldownLoading(true);
+      setTimelineDrilldownError("");
+      setTimelineDrilldownReport(null);
+      setTimelineDrilldownTitle(
+        `${metricTitleMap[barKey] || "Register"} • ${row.longLabel || row.label}`,
+      );
+
+      const response = await api.get("reports/financial-drilldown/", {
+        params: {
+          from_date: toIsoDate(row.rangeStartDate || row.startDate),
+          to_date: toIsoDate(row.rangeEndDate || row.endDate),
+          metric: barKey,
+        },
+      });
+
+      setTimelineDrilldownReport(response.data);
+    } catch (err) {
+      setTimelineDrilldownError(
+        getErrorMessage(err, "Unable to load the records behind this timeline bar right now."),
+      );
+    } finally {
+      setTimelineDrilldownLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadReports(getMonthStart(), today);
     loadProducts();
@@ -844,11 +1253,32 @@ export default function ReportsTab() {
   const profit = dashboard?.profit || {};
   const profitSummary = profit.summary || {};
   const profitBreakdown = profit.breakdown || {};
+  const foodCostSummary = profitBreakdown.food_cost_summary || {};
+  const labourCostSummary = profitBreakdown.labour_cost_summary || {};
+  const marketingExpenseSummary = profitBreakdown.marketing_expense_summary || {};
 
   const consumptionSummary = consumptionReport?.summary || {};
   const consumptionProduct = consumptionReport?.product || {};
   const consumptionCharts = consumptionReport?.charts || {};
   const consumptionDetails = consumptionReport?.details || {};
+  const financialTimelineRows = useMemo(
+    () => buildFinancialTimelineRows(charts.daily_financials || [], timelineGranularity),
+    [charts.daily_financials, timelineGranularity],
+  );
+
+  useEffect(() => {
+    if (!financialTimelineRows.length) {
+      setSelectedTimelineKey("");
+      return;
+    }
+
+    setSelectedTimelineKey((current) => {
+      if (current && financialTimelineRows.some((row) => row.key === current)) {
+        return current;
+      }
+      return financialTimelineRows[financialTimelineRows.length - 1].key;
+    });
+  }, [financialTimelineRows]);
 
   const insights = useMemo(() => {
     if (!dashboard) {
@@ -960,6 +1390,15 @@ export default function ReportsTab() {
           />
         </div>
       </div>
+
+      <FinancialTimelineChart
+        rows={financialTimelineRows}
+        granularity={timelineGranularity}
+        onGranularityChange={setTimelineGranularity}
+        selectedKey={selectedTimelineKey}
+        onSelect={setSelectedTimelineKey}
+        onBarClick={loadTimelineDrilldown}
+      />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <DonutChart
@@ -1367,6 +1806,24 @@ export default function ReportsTab() {
         <MetricCard title="Revenue" value={formatCurrency(profitSummary.revenue)} hint="Completed-order sales only" tone="emerald" />
         <MetricCard title="Gross Profit" value={formatCurrency(profitSummary.gross_profit)} hint="Revenue minus COGS" tone={Number(profitSummary.gross_profit || 0) >= 0 ? "emerald" : "rose"} />
         <MetricCard title="Net Profit" value={formatCurrency(profitSummary.net_profit)} hint={`${formatNumber(profitSummary.profit_margin)}% margin`} tone={Number(profitSummary.net_profit || 0) >= 0 ? "emerald" : "rose"} />
+        <MetricCard
+          title="Food Cost %"
+          value={`${formatNumber(profitSummary.food_cost_ratio)}%`}
+          hint={`${formatCurrency(profitSummary.food_cost_value)} consumed from opening + purchases - closing`}
+          tone="amber"
+        />
+        <MetricCard
+          title="Labour Cost %"
+          value={`${formatNumber(profitSummary.labour_cost_ratio)}%`}
+          hint={`${formatCurrency(profitSummary.labour_cost_value)} matched from labour categories or salary/staff-style expense text`}
+          tone="violet"
+        />
+        <MetricCard
+          title="Marketing Expense %"
+          value={`${formatNumber(profitSummary.marketing_expense_ratio)}%`}
+          hint={`${formatCurrency(profitSummary.marketing_expense_value)} matched from marketing categories or ad/promotion-style expense text`}
+          tone="cyan"
+        />
         <MetricCard title="COGS Ratio" value={`${formatNumber(profitSummary.cogs_ratio)}%`} hint="How much revenue turned into consumed stock cost" tone="amber" />
         <MetricCard title="Expense Ratio" value={`${formatNumber(profitSummary.expense_ratio)}%`} hint="How much revenue turned into operating expense" tone="rose" />
         <MetricCard title="Refund Pressure" value={formatCurrency(summary.refunds_issued)} hint={`${formatNumber(summary.cooked_cancelled_count)} cooked cancellations in range`} tone="violet" />
@@ -1460,6 +1917,109 @@ export default function ReportsTab() {
           <div className="space-y-3">
             <MetricCard title="Total Expenses" value={formatCurrency(profitBreakdown.expenses_summary?.total_expenses)} hint={`${formatNumber(profitBreakdown.expenses_summary?.expense_count)} expense records`} tone="rose" />
             <MetricCard title="Categories Used" value={formatNumber(profitBreakdown.expenses_summary?.categories_used)} hint={`${formatCurrency(profitBreakdown.expenses_summary?.cash_expenses)} cash and ${formatCurrency(profitBreakdown.expenses_summary?.non_cash_expenses)} non-cash`} tone="violet" />
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-3">
+        <SectionCard
+          title="Food Cost Formula"
+          eyebrow="Stock Math"
+          description="Uses the selected date range and reconstructs opening and closing stock value from current inventory plus confirmed stock movement history."
+        >
+          <div className="space-y-3">
+            <MetricCard
+              title="Opening Stock"
+              value={formatCurrency(foodCostSummary.opening_stock_value)}
+              hint="Estimated value at the very start of the selected range"
+              tone="cyan"
+            />
+            <MetricCard
+              title="Purchases"
+              value={formatCurrency(foodCostSummary.purchases_value)}
+              hint={`${formatNumber(foodCostSummary.purchase_event_count)} confirmed purchase events inside the range`}
+              tone="emerald"
+            />
+            <MetricCard
+              title="Closing Stock"
+              value={formatCurrency(foodCostSummary.closing_stock_value)}
+              hint="Estimated value at the end of the selected range"
+              tone="amber"
+            />
+            <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+              <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">How It Was Read</div>
+              <div className="mt-2 text-sm leading-6 text-slate-300">
+                {foodCostSummary.calculation_note || "Food cost uses opening stock + purchases - closing stock."}
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Labour Cost Reading"
+          eyebrow="Payroll Pressure"
+          description="Shows how much of completed-order sales was absorbed by staff cost in the selected range."
+        >
+          <div className="space-y-3">
+            <MetricCard
+              title="Labour Cost"
+              value={formatCurrency(labourCostSummary.total_amount)}
+              hint={`${formatNumber(labourCostSummary.expense_count)} labour-tagged expense records`}
+              tone="violet"
+            />
+            <MetricCard
+              title="Ratio"
+              value={`${formatNumber(labourCostSummary.ratio)}%`}
+              hint="Calculated as labour cost divided by total sales"
+              tone="rose"
+            />
+            <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+              <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Matched Categories</div>
+              <div className="mt-2 text-sm leading-6 text-slate-300">
+                {labourCostSummary.matched_categories?.length
+                  ? labourCostSummary.matched_categories.join(", ")
+                  : "No labour category expense was found in this range yet."}
+              </div>
+              {labourCostSummary.matching_mode === "keyword_fallback" && labourCostSummary.matched_keywords?.length ? (
+                <div className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Fallback keywords: {labourCostSummary.matched_keywords.join(", ")}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Marketing Expense Reading"
+          eyebrow="Promotion Pressure"
+          description="Shows how much of completed-order sales was absorbed by promotion and advertising cost in the selected range."
+        >
+          <div className="space-y-3">
+            <MetricCard
+              title="Marketing Spend"
+              value={formatCurrency(marketingExpenseSummary.total_amount)}
+              hint={`${formatNumber(marketingExpenseSummary.expense_count)} marketing-tagged expense records`}
+              tone="cyan"
+            />
+            <MetricCard
+              title="Ratio"
+              value={`${formatNumber(marketingExpenseSummary.ratio)}%`}
+              hint="Calculated as marketing spend divided by total sales"
+              tone="amber"
+            />
+            <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 px-4 py-4">
+              <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Matched Categories</div>
+              <div className="mt-2 text-sm leading-6 text-slate-300">
+                {marketingExpenseSummary.matched_categories?.length
+                  ? marketingExpenseSummary.matched_categories.join(", ")
+                  : "No marketing category expense was found in this range yet."}
+              </div>
+              {marketingExpenseSummary.matching_mode === "keyword_fallback" && marketingExpenseSummary.matched_keywords?.length ? (
+                <div className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Fallback keywords: {marketingExpenseSummary.matched_keywords.join(", ")}
+                </div>
+              ) : null}
+            </div>
           </div>
         </SectionCard>
       </div>
@@ -1671,6 +2231,21 @@ export default function ReportsTab() {
           }
         }}
         onSubmit={handleProfitUnlock}
+      />
+
+      <FinancialDrilldownModal
+        open={showTimelineDrilldown}
+        title={timelineDrilldownTitle}
+        loading={timelineDrilldownLoading}
+        error={timelineDrilldownError}
+        report={timelineDrilldownReport}
+        onClose={() => {
+          setShowTimelineDrilldown(false);
+          setTimelineDrilldownTitle("");
+          setTimelineDrilldownLoading(false);
+          setTimelineDrilldownError("");
+          setTimelineDrilldownReport(null);
+        }}
       />
 
       <div className="overflow-hidden rounded-[34px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.24),_transparent_26%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.18),_transparent_24%),linear-gradient(135deg,_#020617_0%,_#0f172a_48%,_#111827_100%)] p-6">

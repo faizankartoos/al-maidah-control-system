@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -79,7 +79,7 @@ class ReportsDashboardTests(TestCase):
         )
         Inventory.objects.create(
             product=self.product,
-            quantity=Decimal("2.00"),
+            quantity=Decimal("4.00"),
             total_value=Decimal("100.00"),
         )
 
@@ -106,7 +106,26 @@ class ReportsDashboardTests(TestCase):
         )
 
     def _create_expense_data(self):
+        labour_category, _ = ExpenseCategory.objects.get_or_create(name="Labour")
+        marketing_category, _ = ExpenseCategory.objects.get_or_create(name="Marketing")
         category = ExpenseCategory.objects.create(name="Utilities")
+
+        Expense.objects.create(
+            category=labour_category,
+            amount=Decimal("30.00"),
+            payment_mode="bank",
+            expense_date=self.today,
+            description="Kitchen staff payout",
+            reference_id="PAY-1001",
+        )
+        Expense.objects.create(
+            category=marketing_category,
+            amount=Decimal("10.00"),
+            payment_mode="upi",
+            expense_date=self.today,
+            description="Instagram boost",
+            reference_id="MKT-1001",
+        )
         Expense.objects.create(
             category=category,
             amount=Decimal("20.00"),
@@ -225,8 +244,8 @@ class ReportsDashboardTests(TestCase):
 
         self.assertEqual(self._decimal(payload["summary"]["gross_revenue"]), Decimal("120.00"))
         self.assertEqual(self._decimal(payload["summary"]["total_cogs"]), Decimal("40.00"))
-        self.assertEqual(self._decimal(payload["summary"]["total_expenses"]), Decimal("20.00"))
-        self.assertEqual(self._decimal(payload["summary"]["net_profit"]), Decimal("60.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_expenses"]), Decimal("60.00"))
+        self.assertEqual(self._decimal(payload["summary"]["net_profit"]), Decimal("20.00"))
         self.assertEqual(self._decimal(payload["summary"]["refunds_issued"]), Decimal("20.00"))
         self.assertEqual(self._decimal(payload["summary"]["cooked_cancelled_value"]), Decimal("80.00"))
 
@@ -240,6 +259,129 @@ class ReportsDashboardTests(TestCase):
         self.assertEqual(payload["details"]["low_stock_items"][0]["product_name"], "Chicken Fillet")
         self.assertEqual(payload["details"]["recent_expenses"][0]["category_name"], "Utilities")
         self.assertEqual(payload["details"]["top_selling_items"][0]["item_name"], "Zinger Burger")
+
+    def test_financial_drilldown_revenue_returns_completed_orders_in_range(self):
+        response = self.client.get(
+            "/api/reports/financial-drilldown/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+                "metric": "revenue",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["metric"], "revenue")
+        self.assertEqual(self._decimal(payload["summary"]["total_amount"]), Decimal("120.00"))
+        self.assertEqual(payload["summary"]["record_count"], 1)
+        self.assertEqual(payload["items"][0]["title"], f"Order #{self.completed_order.id}")
+
+    def test_financial_drilldown_cogs_returns_stock_out_logs_in_range(self):
+        response = self.client.get(
+            "/api/reports/financial-drilldown/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+                "metric": "cogs",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["metric"], "cogs")
+        self.assertEqual(self._decimal(payload["summary"]["total_amount"]), Decimal("40.00"))
+        self.assertEqual(self._decimal(payload["summary"]["total_quantity"]), Decimal("1.00"))
+        self.assertEqual(payload["summary"]["record_count"], 1)
+        self.assertEqual(payload["items"][0]["title"], "Chicken Fillet")
+
+    def test_financial_drilldown_expenses_returns_logged_expenses_in_range(self):
+        response = self.client.get(
+            "/api/reports/financial-drilldown/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+                "metric": "expenses",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["metric"], "expenses")
+        self.assertEqual(self._decimal(payload["summary"]["total_amount"]), Decimal("60.00"))
+        self.assertEqual(payload["summary"]["record_count"], 3)
+        self.assertEqual(payload["summary"]["categories_used"], 3)
+
+    def test_profit_report_includes_food_labour_and_marketing_ratios(self):
+        response = self.client.get(
+            "/api/reports/profit/",
+            {
+                "from_date": self.today.isoformat(),
+                "to_date": self.today.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        summary = payload["summary"]
+        breakdown = payload["breakdown"]
+
+        self.assertEqual(self._decimal(summary["opening_stock_value"]), Decimal("50.00"))
+        self.assertEqual(self._decimal(summary["purchases_value"]), Decimal("90.00"))
+        self.assertEqual(self._decimal(summary["closing_stock_value"]), Decimal("100.00"))
+        self.assertEqual(self._decimal(summary["food_cost_value"]), Decimal("40.00"))
+        self.assertEqual(self._decimal(summary["food_cost_ratio"]), Decimal("33.33"))
+        self.assertEqual(self._decimal(summary["labour_cost_value"]), Decimal("30.00"))
+        self.assertEqual(self._decimal(summary["labour_cost_ratio"]), Decimal("25.00"))
+        self.assertEqual(self._decimal(summary["marketing_expense_value"]), Decimal("10.00"))
+        self.assertEqual(self._decimal(summary["marketing_expense_ratio"]), Decimal("8.33"))
+        self.assertEqual(breakdown["labour_cost_summary"]["matched_categories"], ["Labour"])
+        self.assertEqual(
+            breakdown["marketing_expense_summary"]["matched_categories"],
+            ["Marketing"],
+        )
+
+    def test_profit_report_falls_back_to_keyword_matching_when_generic_category_is_used(self):
+        variable = ExpenseCategory.objects.create(name="Variable")
+        fallback_day = self.today - timedelta(days=1)
+
+        Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Keyword Labour",
+            customer_phone="7000000045",
+            total_amount=Decimal("50000.00"),
+            completed_at=timezone.make_aware(datetime.combine(fallback_day, time(hour=12, minute=0))),
+        )
+        Expense.objects.create(
+            category=variable,
+            amount=Decimal("34000.00"),
+            payment_mode="cash",
+            expense_date=fallback_day,
+            description="salary",
+        )
+
+        response = self.client.get(
+            "/api/reports/profit/",
+            {
+                "from_date": fallback_day.isoformat(),
+                "to_date": fallback_day.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        labour = payload["breakdown"]["labour_cost_summary"]
+
+        self.assertEqual(self._decimal(payload["summary"]["labour_cost_value"]), Decimal("34000.00"))
+        self.assertEqual(self._decimal(payload["summary"]["labour_cost_ratio"]), Decimal("68.00"))
+        self.assertEqual(labour["matching_mode"], "keyword_fallback")
+        self.assertEqual(labour["matched_categories"], ["Variable"])
+        self.assertIn("salary", labour["matched_keywords"])
 
     def test_inventory_consumption_report_returns_usage_metrics_and_timeline(self):
         earlier_day = self.today - timedelta(days=2)
@@ -287,7 +429,7 @@ class ReportsDashboardTests(TestCase):
         self.assertEqual(self._decimal(payload["summary"]["total_stocked_out_value"]), Decimal("90.00"))
         self.assertEqual(self._decimal(payload["summary"]["average_daily_usage"]), Decimal("1.00"))
         self.assertEqual(self._decimal(payload["summary"]["days_per_unit_used"]), Decimal("1.00"))
-        self.assertEqual(self._decimal(payload["summary"]["current_stock_cover_days"]), Decimal("2.00"))
+        self.assertEqual(self._decimal(payload["summary"]["current_stock_cover_days"]), Decimal("4.00"))
         self.assertEqual(payload["summary"]["timeline_events_count"], 4)
 
         self.assertEqual(len(payload["charts"]["daily_movements"]), 3)

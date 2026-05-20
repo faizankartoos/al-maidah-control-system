@@ -1,7 +1,10 @@
 import json
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from .models import Expense, ExpenseCategory
 
@@ -9,6 +12,14 @@ from .models import Expense, ExpenseCategory
 class ExpenseApiTests(TestCase):
 
     def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_superuser(
+            username="expenses-admin",
+            password="testpass123",
+            email="expenses-admin@example.com",
+        )
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         self.category = ExpenseCategory.objects.create(name="Utilities")
 
     def test_cash_expense_is_logged_without_touching_ledger(self):
@@ -154,13 +165,22 @@ class ExpenseApiTests(TestCase):
 
         self.assertEqual(active_only_response.status_code, 200)
         self.assertEqual(all_response.status_code, 200)
-        self.assertEqual(len(active_only_response.json()), 1)
-        self.assertEqual(len(all_response.json()), 2)
-        self.assertEqual(all_response.json()[0]["expense_count"] + all_response.json()[1]["expense_count"], 1)
+        self.assertEqual(len(active_only_response.json()), 3)
+        self.assertEqual(len(all_response.json()), 4)
+        self.assertEqual(sum(row["expense_count"] for row in all_response.json()), 1)
         self.assertIn(
             inactive_category.name,
             {row["name"] for row in all_response.json()},
         )
+
+    def test_default_labour_and_marketing_categories_are_seeded(self):
+        response = self.client.get("/api/expensescategory/")
+
+        self.assertEqual(response.status_code, 200)
+
+        names = {row["name"] for row in response.json()}
+        self.assertIn("Labour", names)
+        self.assertIn("Marketing", names)
 
     def test_category_can_be_updated(self):
         response = self.client.patch(

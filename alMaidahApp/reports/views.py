@@ -4,6 +4,8 @@ from rest_framework import status
 
 from .serializers import (
     DashboardReportSerializer,
+    FinancialDrilldownReportSerializer,
+    FinancialDrilldownRequestSerializer,
     DataInsightsReportSerializer,
     DataInsightsRequestSerializer,
     DateRangeSerializer,
@@ -22,6 +24,7 @@ from .services.expenses import get_expenses_report
 from .services.profit import get_profit_report
 from .services.inventory_consumption import get_inventory_consumption_report
 from .services.data_insights import get_data_insights_report
+from .services.financial_drilldown import get_financial_drilldown_report
 
 
 class DashboardReportAPIView(APIView):
@@ -114,6 +117,22 @@ class InventoryConsumptionReportAPIView(APIView):
 
         serializer = InventoryConsumptionReportSerializer(report)
         return Response(serializer.data)
+
+
+class FinancialDrilldownReportAPIView(APIView):
+    def get(self, request):
+        params = FinancialDrilldownRequestSerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+
+        data = params.validated_data
+        report = get_financial_drilldown_report(
+            data["from_date"],
+            data["to_date"],
+            data["metric"],
+        )
+
+        serializer = FinancialDrilldownReportSerializer(report)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class DataInsightsReportAPIView(APIView):
