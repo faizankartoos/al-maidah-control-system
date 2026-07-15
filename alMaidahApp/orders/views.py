@@ -1251,6 +1251,7 @@ class OrdersFilterAPIView(APIView):
     def get(self, request):
 
         filter_type = request.query_params.get("filter", "ALL")
+        search_term = (request.query_params.get("search") or "").strip()
         delivery_boy_id = request.query_params.get("delivery_boy")
         exclude_address_text = (request.query_params.get("exclude_address_text") or "").strip()
         from_date = request.query_params.get("from_date")
@@ -1290,6 +1291,20 @@ class OrdersFilterAPIView(APIView):
 
         if filter_type in ["TAKEAWAY", "DELIVERY"]:
             qs = qs.filter(order_type=filter_type)
+
+        if search_term:
+            search_query = (
+                Q(customer_phone__icontains=search_term)
+                | Q(customer_name__icontains=search_term)
+                | Q(delivery_address__icontains=search_term)
+                | Q(table_number__icontains=search_term)
+                | Q(area__name__icontains=search_term)
+            )
+
+            if search_term.isdigit():
+                search_query |= Q(id=int(search_term))
+
+            qs = qs.filter(search_query).distinct()
 
         if from_date:
             parsed_from_date = parse_date(from_date)

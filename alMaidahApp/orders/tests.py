@@ -1644,6 +1644,43 @@ class CancelOrderTests(AuthenticatedOrdersAPITestCase):
 
 class OrderFilterTests(AuthenticatedOrdersAPITestCase):
 
+    def test_phone_search_returns_matching_order_from_order_history(self):
+
+        older_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Older Customer",
+            customer_phone="9900000777",
+            delivery_address="Chadoora",
+        )
+        OrderItem.objects.create(
+            order=older_order,
+            item_name="Pizza",
+            quantity=1,
+            price=Decimal("400.00")
+        )
+        Order.objects.filter(pk=older_order.pk).update(
+            created_at=timezone.now() - timedelta(days=14)
+        )
+
+        Order.objects.create(
+            order_type="DINE_IN",
+            order_status="PROCESSING",
+            payment_status="UNPAID",
+            customer_name="Today Customer",
+            table_number="Table 7",
+        )
+
+        response = self.client.get("/api/orders/filter/?filter=ALL&search=9900000777")
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.json()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], older_order.id)
+        self.assertEqual(results[0]["customer_phone"], "9900000777")
+
     def test_order_filter_returns_delivery_address_and_item_summaries(self):
 
         delivery_order = Order.objects.create(

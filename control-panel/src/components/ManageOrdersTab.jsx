@@ -267,16 +267,21 @@ export default function ManageOrdersTab({
   }
 
   async function fetchOrders() {
+    const trimmedSearch = search.trim();
 
     const params = new URLSearchParams({
       filter,
     });
 
-    if (fromDate) {
+    if (trimmedSearch) {
+      params.set("search", trimmedSearch);
+    }
+
+    if (!trimmedSearch && fromDate) {
       params.set("from_date", fromDate);
     }
 
-    if (toDate) {
+    if (!trimmedSearch && toDate) {
       params.set("to_date", toDate);
     }
 
@@ -351,8 +356,12 @@ export default function ManageOrdersTab({
   }
 
   useEffect(() => {
-    fetchOrders();
-  }, [filter, deliveryBoyFilter, excludeAddressText, fromDate, toDate]);
+    const timer = window.setTimeout(() => {
+      fetchOrders();
+    }, search.trim() ? 250 : 0);
+
+    return () => window.clearTimeout(timer);
+  }, [filter, deliveryBoyFilter, excludeAddressText, fromDate, toDate, search]);
 
   useEffect(() => {
     if (!showExternalQueue) {
@@ -412,10 +421,18 @@ export default function ManageOrdersTab({
 
 
   const filteredOrders = orders.filter(order => {
+    const term = search.trim().toLowerCase();
+
+    if (!term) {
+      return true;
+    }
 
     return (
-      order.id.toString().includes(search) ||
-      (order.customer_name || "").toLowerCase().includes(search.toLowerCase())
+      order.id.toString().includes(term) ||
+      (order.customer_name || "").toLowerCase().includes(term) ||
+      (order.customer_phone || "").toLowerCase().includes(term) ||
+      (order.delivery_address || "").toLowerCase().includes(term) ||
+      (order.area_name || "").toLowerCase().includes(term)
     );
   });
 
@@ -1213,7 +1230,7 @@ async function submitCollectPayment(){
 	      <div className="min-w-[260px] flex-1">
 	        <div className="mb-1 text-xs text-slate-400">Search</div>
 	        <input
-	          placeholder="Search Order ID or Customer..."
+	          placeholder="Search phone, order ID, or customer..."
 	          value={search}
 	          onChange={(e)=>setSearch(e.target.value)}
 	          className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
