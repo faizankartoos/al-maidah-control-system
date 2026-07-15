@@ -100,10 +100,13 @@ export default function OrdersTab({ externalMode = false }) {
   const [paymentOnlineAmount,setPaymentOnlineAmount] = useState("")
 
   useEffect(() => {
-
-  fetch(buildApiUrl("ledger/delivery-boys/"))
-    .then(res => res.json())
-    .then(data => setDeliveryBoys(data))
+    api.get("/ledger/delivery-boys/")
+      .then((res) => {
+        setDeliveryBoys(Array.isArray(res.data) ? res.data : []);
+      })
+      .catch(() => {
+        setDeliveryBoys([]);
+      });
 
   }, [])
 
