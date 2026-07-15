@@ -34,6 +34,23 @@ function statusBadge(status) {
   return "border-slate-700 bg-slate-800 text-slate-200";
 }
 
+function normalizeDeliveryBoys(payload) {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return [...payload]
+    .filter((boy) => boy && boy.id && boy.name)
+    .sort((left, right) => {
+      const activeDelta = Number(Boolean(right.is_active)) - Number(Boolean(left.is_active));
+      if (activeDelta !== 0) {
+        return activeDelta;
+      }
+
+      return String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" });
+    });
+}
+
 function paymentBadge(status) {
   if (status === "PAID") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
   if (status === "UNPAID") return "border-rose-500/30 bg-rose-500/10 text-rose-300";
@@ -411,13 +428,33 @@ export default function ManageOrdersTab({
         setSelectedCategory(null);
       });
 
-    api.get("/ledger/delivery-boys/")
-      .then((res) => {
-        setDeliveryBoys(Array.isArray(res.data) ? res.data : []);
-      })
-      .catch(() => {
+    async function loadDeliveryBoys() {
+      try {
+        const response = await api.get("/ledger/delivery-boys/");
+        const normalized = normalizeDeliveryBoys(response.data);
+
+        if (normalized.length) {
+          setDeliveryBoys(normalized);
+          return;
+        }
+      } catch (_error) {
+        // Fall back to the broader ledger accounts endpoint below.
+      }
+
+      try {
+        const fallbackResponse = await api.get("/accounts/", {
+          params: {
+            account_type: "DELIVERY",
+            include_inactive: true,
+          },
+        });
+        setDeliveryBoys(normalizeDeliveryBoys(fallbackResponse.data));
+      } catch (_error) {
         setDeliveryBoys([]);
-      });
+      }
+    }
+
+    loadDeliveryBoys();
   }, []);
 
   useEffect(() => {

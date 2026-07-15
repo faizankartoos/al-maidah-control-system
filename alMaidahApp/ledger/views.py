@@ -428,10 +428,14 @@ class DeliveryBoysAPIView(APIView):
     def get(self, request):
         boys = LedgerAccount.objects.filter(account_type="DELIVERY", is_active=True).order_by("name")
 
+        if not boys.exists():
+            boys = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("name")
+
         data = [
             {
                 "id": boy.id,
                 "name": boy.name,
+                "is_active": boy.is_active,
             }
             for boy in boys
         ]

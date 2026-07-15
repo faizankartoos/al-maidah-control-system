@@ -38,6 +38,23 @@ function formatMoney(value) {
   });
 }
 
+function normalizeDeliveryBoys(payload) {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return [...payload]
+    .filter((boy) => boy && boy.id && boy.name)
+    .sort((left, right) => {
+      const activeDelta = Number(Boolean(right.is_active)) - Number(Boolean(left.is_active));
+      if (activeDelta !== 0) {
+        return activeDelta;
+      }
+
+      return String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" });
+    });
+}
+
 export default function OrdersTab({ externalMode = false }) {
   const inputStyle = `
   w-full bg-slate-600 p-3 rounded text-white
@@ -100,13 +117,33 @@ export default function OrdersTab({ externalMode = false }) {
   const [paymentOnlineAmount,setPaymentOnlineAmount] = useState("")
 
   useEffect(() => {
-    api.get("/ledger/delivery-boys/")
-      .then((res) => {
-        setDeliveryBoys(Array.isArray(res.data) ? res.data : []);
-      })
-      .catch(() => {
+    async function loadDeliveryBoys() {
+      try {
+        const response = await api.get("/ledger/delivery-boys/");
+        const normalized = normalizeDeliveryBoys(response.data);
+
+        if (normalized.length) {
+          setDeliveryBoys(normalized);
+          return;
+        }
+      } catch (_error) {
+        // Fall back to the broader ledger accounts endpoint below.
+      }
+
+      try {
+        const fallbackResponse = await api.get("/accounts/", {
+          params: {
+            account_type: "DELIVERY",
+            include_inactive: true,
+          },
+        });
+        setDeliveryBoys(normalizeDeliveryBoys(fallbackResponse.data));
+      } catch (_error) {
         setDeliveryBoys([]);
-      });
+      }
+    }
+
+    loadDeliveryBoys();
 
   }, [])
 

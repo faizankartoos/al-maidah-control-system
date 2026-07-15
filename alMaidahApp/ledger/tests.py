@@ -206,6 +206,46 @@ class CollectFromAccountTests(AuthenticatedLedgerTestCase):
             ).exists()
         )
 
+
+class DeliveryBoyEndpointTests(AuthenticatedLedgerTestCase):
+
+    def test_delivery_boys_endpoint_returns_active_delivery_accounts(self):
+        LedgerAccount.objects.create(
+            name="Active Boy",
+            account_type="DELIVERY",
+            is_active=True,
+        )
+        LedgerAccount.objects.create(
+            name="Inactive Boy",
+            account_type="DELIVERY",
+            is_active=False,
+        )
+
+        response = self.client.get("/api/ledger/delivery-boys/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["name"], "Active Boy")
+        self.assertTrue(payload[0]["is_active"])
+
+    def test_delivery_boys_endpoint_falls_back_to_all_delivery_accounts_when_no_active_exist(self):
+        LedgerAccount.objects.create(
+            name="Inactive Boy",
+            account_type="DELIVERY",
+            is_active=False,
+        )
+
+        response = self.client.get("/api/ledger/delivery-boys/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["name"], "Inactive Boy")
+        self.assertFalse(payload[0]["is_active"])
+
     def test_collect_updates_linked_completed_order_payment_status(self):
         customer = LedgerAccount.objects.create(
             name="Ledger Customer",
