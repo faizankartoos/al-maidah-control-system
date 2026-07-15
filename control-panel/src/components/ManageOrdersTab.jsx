@@ -234,6 +234,7 @@ export default function ManageOrdersTab({
   const [completeName, setCompleteName] = useState("");
   const [completePhone, setCompletePhone] = useState("");
   const [completeAddress, setCompleteAddress] = useState("");
+  const [highlightedOrderId, setHighlightedOrderId] = useState(null);
 
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -264,6 +265,15 @@ export default function ManageOrdersTab({
     window.setTimeout(() => {
       setShowCollectDeniedToast(false);
     }, 2200);
+  }
+
+  function toggleOrderHighlight(event, orderId) {
+    if (event.target.closest("button, input, select, textarea, a, label")) {
+      return;
+    }
+
+    event.preventDefault();
+    setHighlightedOrderId((current) => (current === orderId ? null : orderId));
   }
 
   async function fetchOrders() {
@@ -458,6 +468,12 @@ export default function ManageOrdersTab({
 
     return category.toLowerCase().includes(searchTerm);
   });
+
+  useEffect(() => {
+    if (highlightedOrderId && !filteredOrders.some((order) => order.id === highlightedOrderId)) {
+      setHighlightedOrderId(null);
+    }
+  }, [filteredOrders, highlightedOrderId]);
 
   const dashboardStats = useMemo(() => {
     const totalValue = filteredOrders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
@@ -1318,7 +1334,15 @@ async function submitCollectPayment(){
 	      </div>
 	    ) : (
 	      filteredOrders.map(order => (
-	        <div key={order.id} className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+	        <div
+            key={order.id}
+            onDoubleClick={(event) => toggleOrderHighlight(event, order.id)}
+            className={`rounded-3xl border p-5 transition-all duration-300 ${
+              highlightedOrderId === order.id
+                ? "border-amber-300/70 bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.18),_rgba(15,23,42,0.96)_58%)] shadow-[0_0_0_1px_rgba(253,224,71,0.25),0_24px_70px_rgba(251,191,36,0.18)]"
+                : "border-slate-800 bg-slate-950/70 hover:border-slate-700"
+            }`}
+          >
 	          <div className="flex flex-col gap-4">
 	            <div className="flex flex-wrap items-center gap-2">
 	              <div className="text-xl font-semibold text-white">#{order.id}</div>
@@ -1467,6 +1491,11 @@ async function submitCollectPayment(){
 	                Print
 	              </button>
 	            </div>
+              {highlightedOrderId === order.id && (
+                <div className="rounded-2xl border border-amber-300/30 bg-amber-200/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.26em] text-amber-100">
+                  Focus mode enabled
+                </div>
+              )}
 	          </div>
 	        </div>
 	      ))
@@ -1487,7 +1516,15 @@ async function submitCollectPayment(){
 
 		    {filteredOrders.map(order => (
 
-	      <div key={order.id} className="grid grid-cols-[1.2fr_0.9fr_0.9fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b border-slate-800 px-4 py-4">
+	      <div
+          key={order.id}
+          onDoubleClick={(event) => toggleOrderHighlight(event, order.id)}
+          className={`grid grid-cols-[1.2fr_0.9fr_0.9fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b px-4 py-4 transition-all duration-300 ${
+            highlightedOrderId === order.id
+              ? "border-amber-300/35 bg-[linear-gradient(90deg,_rgba(251,191,36,0.14),_rgba(30,41,59,0.72),_rgba(251,191,36,0.08))] shadow-[inset_0_0_0_1px_rgba(253,224,71,0.18)]"
+              : "border-slate-800 hover:bg-slate-900/45"
+          }`}
+        >
 
 	        <div>
 	          <div className="text-base font-semibold text-white">#{order.id}</div>
