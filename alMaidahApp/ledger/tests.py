@@ -586,6 +586,81 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertIsNone(order.customer_account)
         self.assertTrue(LedgerEntry.objects.filter(reference=f"ORDER-{order.id}").exists())
 
+    def test_bulk_quick_delete_processes_multiple_accounts(self):
+        clean_vendor = LedgerAccount.objects.create(
+            name="Bulk Delete Vendor",
+            account_type="VENDOR",
+        )
+        customer = LedgerAccount.objects.create(
+            name="Bulk Archive Customer",
+            account_type="CUSTOMER",
+            contact_number="7000000014",
+        )
+
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Bulk Archive Customer",
+            customer_phone="7000000014",
+            customer_account=customer,
+            total_amount=Decimal("120.00"),
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Burger",
+            quantity=2,
+            price=Decimal("60.00"),
+            total_price=Decimal("120.00"),
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("120.00"),
+            reference=f"ORDER-{order.id}",
+            description="Customer owes restaurant",
+        )
+
+        response = self.client.post(
+            "/api/accounts/bulk-quick-delete/",
+            {
+                "password": "admin@almaidah",
+                "account_ids": [clean_vendor.id, customer.id],
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["summary"]["deleted_count"], 1)
+        self.assertEqual(payload["summary"]["archived_count"], 1)
+        self.assertEqual(payload["summary"]["blocked_count"], 0)
+
+        self.assertFalse(LedgerAccount.objects.filter(id=clean_vendor.id).exists())
+        customer.refresh_from_db()
+        self.assertFalse(customer.is_active)
+        order.refresh_from_db()
+        self.assertIsNone(order.customer_account)
+
+    def test_bulk_quick_delete_requires_password(self):
+        vendor = LedgerAccount.objects.create(
+            name="Protected Bulk Delete",
+            account_type="VENDOR",
+        )
+
+        response = self.client.post(
+            "/api/accounts/bulk-quick-delete/",
+            {
+                "password": "wrong-password",
+                "account_ids": [vendor.id],
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(LedgerAccount.objects.filter(id=vendor.id).exists())
+
 
 class LedgerDailyReportTests(AuthenticatedLedgerTestCase):
 

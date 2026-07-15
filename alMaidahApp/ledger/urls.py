@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    AccountBulkQuickDeleteAPIView,
     AccountDetailAPIView,
     AccountQuickDeleteAPIView,
     AccountListCreateAPIView,
@@ -15,6 +16,7 @@ from .views import (
 urlpatterns = [
 
     path("accounts/", AccountListCreateAPIView.as_view()),
+    path("accounts/bulk-quick-delete/", AccountBulkQuickDeleteAPIView.as_view()),
     path("accounts/<int:account_id>/", AccountDetailAPIView.as_view()),
     path("accounts/<int:account_id>/quick-delete/", AccountQuickDeleteAPIView.as_view()),
     path("customer-ledger/<int:customer_id>/", CustomerLedgerAPIView.as_view()),

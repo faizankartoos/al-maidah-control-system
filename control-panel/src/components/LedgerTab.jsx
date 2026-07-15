@@ -529,6 +529,79 @@ function QuickDeleteModal({
   );
 }
 
+function BulkQuickDeleteModal({
+  count,
+  password,
+  error,
+  loading,
+  onClose,
+  onChange,
+  onSubmit,
+}) {
+  if (!count) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[30px] border border-rose-500/20 bg-slate-950 p-6 shadow-[0_25px_80px_rgba(0,0,0,0.6)]">
+        <div className="text-[11px] uppercase tracking-[0.34em] text-rose-300">
+          Bulk Delete
+        </div>
+        <h3 className="mt-3 text-2xl font-semibold text-white">
+          Delete {count} selected account{count === 1 ? "" : "s"}
+        </h3>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Each selected account will use the same quick-delete rules: clean accounts get deleted, and accounts with transaction history get archived safely instead.
+        </p>
+
+        <div className="mt-4 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          Enter the protected management password to continue.
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-4">
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => onChange(event.target.value)}
+              autoFocus
+              className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-rose-400"
+              placeholder="Enter delete password"
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 rounded-2xl bg-rose-500 px-4 py-3 font-semibold text-white transition hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <InlineButtonContent busy={loading} busyLabel="Deleting...">
+                Bulk Delete
+              </InlineButtonContent>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function AccountDetailModal({ report, onClose, onViewOrder }) {
   const account = report.account;
 
@@ -726,6 +799,13 @@ export default function LedgerTab() {
     error: "",
     loading: false,
   });
+  const [selectedAccountIds, setSelectedAccountIds] = useState([]);
+  const [bulkQuickDeleteState, setBulkQuickDeleteState] = useState({
+    open: false,
+    password: "",
+    error: "",
+    loading: false,
+  });
 
   const [collectState, setCollectState] = useState({
     account: null,
@@ -850,6 +930,22 @@ export default function LedgerTab() {
         );
       });
   }, [accounts, accountFilters]);
+
+  const selectableAccounts = useMemo(
+    () => filteredAccounts.filter((account) => account.account_type !== "CASH"),
+    [filteredAccounts],
+  );
+
+  const allSelectableSelected = Boolean(
+    selectableAccounts.length
+    && selectableAccounts.every((account) => selectedAccountIds.includes(account.id)),
+  );
+
+  useEffect(() => {
+    setSelectedAccountIds((current) =>
+      current.filter((accountId) => accounts.some((account) => account.id === accountId)),
+    );
+  }, [accounts]);
 
   const transactionSummary = useMemo(() => {
     return transactions.reduce(
@@ -1049,6 +1145,37 @@ export default function LedgerTab() {
     });
   };
 
+  const toggleAccountSelection = (accountId) => {
+    setSelectedAccountIds((current) =>
+      current.includes(accountId)
+        ? current.filter((id) => id !== accountId)
+        : [...current, accountId],
+    );
+  };
+
+  const toggleSelectAllAccounts = () => {
+    if (allSelectableSelected) {
+      setSelectedAccountIds([]);
+      return;
+    }
+
+    setSelectedAccountIds(selectableAccounts.map((account) => account.id));
+  };
+
+  const handleOpenBulkQuickDelete = () => {
+    if (!selectedAccountIds.length) {
+      setError("Select at least one ledger account first.");
+      return;
+    }
+
+    setBulkQuickDeleteState({
+      open: true,
+      password: "",
+      error: "",
+      loading: false,
+    });
+  };
+
   const handleConfirmQuickDelete = async (event) => {
     event.preventDefault();
 
@@ -1111,6 +1238,73 @@ export default function LedgerTab() {
         ...current,
         loading: false,
         error: getErrorMessage(requestError, "Quick delete failed."),
+      }));
+    }
+  };
+
+  const handleConfirmBulkQuickDelete = async (event) => {
+    event.preventDefault();
+
+    if (!selectedAccountIds.length) {
+      setBulkQuickDeleteState((current) => ({
+        ...current,
+        error: "Select at least one ledger account to delete.",
+      }));
+      return;
+    }
+
+    if (!bulkQuickDeleteState.password) {
+      setBulkQuickDeleteState((current) => ({
+        ...current,
+        error: "Enter the password to bulk delete these accounts.",
+      }));
+      return;
+    }
+
+    if (bulkQuickDeleteState.password !== ACCOUNT_MANAGEMENT_PASSWORD) {
+      setBulkQuickDeleteState((current) => ({
+        ...current,
+        error: "Incorrect password. Bulk delete is blocked.",
+      }));
+      return;
+    }
+
+    setBulkQuickDeleteState((current) => ({
+      ...current,
+      loading: true,
+      error: "",
+    }));
+    setError("");
+    setSuccess("");
+
+    try {
+      const response = await api.post("/accounts/bulk-quick-delete/", {
+        password: bulkQuickDeleteState.password,
+        account_ids: selectedAccountIds,
+      });
+
+      if (editingAccount?.id && selectedAccountIds.includes(editingAccount.id)) {
+        resetAccountEditor();
+      }
+
+      if (accountReport?.account?.id && selectedAccountIds.includes(accountReport.account.id)) {
+        setAccountReport(null);
+      }
+
+      await refreshAll();
+      setSelectedAccountIds([]);
+      setBulkQuickDeleteState({
+        open: false,
+        password: "",
+        error: "",
+        loading: false,
+      });
+      setSuccess(response.data?.message || "Bulk delete finished.");
+    } catch (requestError) {
+      setBulkQuickDeleteState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(requestError, "Bulk delete failed."),
       }));
     }
   };
@@ -1739,21 +1933,31 @@ export default function LedgerTab() {
                   ? "Archived / inactive accounts are visible right now."
                   : "Archived / inactive accounts are hidden so deleted accounts get out of your way."}
               </div>
-              <button
-                onClick={() =>
-                  setAccountFilters((current) => ({
-                    ...current,
-                    show_inactive: !current.show_inactive,
-                  }))
-                }
-                className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
-                  accountFilters.show_inactive
-                    ? "border border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
-                    : "border border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500 hover:text-white"
-                }`}
-              >
-                {accountFilters.show_inactive ? "Hide Archived" : "Show Archived"}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {!!selectedAccountIds.length && (
+                  <button
+                    onClick={handleOpenBulkQuickDelete}
+                    className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20"
+                  >
+                    Bulk Delete ({selectedAccountIds.length})
+                  </button>
+                )}
+                <button
+                  onClick={() =>
+                    setAccountFilters((current) => ({
+                      ...current,
+                      show_inactive: !current.show_inactive,
+                    }))
+                  }
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
+                    accountFilters.show_inactive
+                      ? "border border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
+                      : "border border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500 hover:text-white"
+                  }`}
+                >
+                  {accountFilters.show_inactive ? "Hide Archived" : "Show Archived"}
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 space-y-3">
@@ -1768,13 +1972,45 @@ export default function LedgerTab() {
                   No accounts match the current filter.
                 </div>
               ) : (
-                filteredAccounts.map((account) => (
+                <>
+                  {selectableAccounts.length ? (
+                    <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-sm">
+                      <div className="text-slate-300">
+                        Select multiple accounts, then use Bulk Delete for one-shot cleanup.
+                      </div>
+                      <label className="flex cursor-pointer items-center gap-2 text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={allSelectableSelected}
+                          onChange={toggleSelectAllAccounts}
+                          className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-rose-500"
+                        />
+                        Select All
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {filteredAccounts.map((account) => (
                   <div
                     key={account.id}
                     className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"
                   >
                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                      <div>
+                      <div className="flex items-start gap-3">
+                        {account.account_type !== "CASH" ? (
+                          <label className="mt-1 flex shrink-0 cursor-pointer items-center">
+                            <input
+                              type="checkbox"
+                              checked={selectedAccountIds.includes(account.id)}
+                              onChange={() => toggleAccountSelection(account.id)}
+                              className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-rose-500"
+                            />
+                          </label>
+                        ) : (
+                          <div className="mt-1 h-4 w-4 shrink-0" />
+                        )}
+
+                        <div>
                         <div className="flex items-center gap-2">
                           <div className="text-lg font-semibold text-white">{account.name}</div>
                           <span className="rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-300">
@@ -1792,6 +2028,7 @@ export default function LedgerTab() {
                         <div className={`mt-3 text-xl font-semibold ${balanceTone(account.account_type, account.balance)}`}>
                           {formatCurrency(account.balance)}
                         </div>
+                      </div>
                       </div>
 
                       <div className="flex gap-2">
@@ -1838,7 +2075,8 @@ export default function LedgerTab() {
                       </div>
                     </div>
                   </div>
-                ))
+                ))}
+                </>
               )}
             </div>
           </div>
@@ -2601,6 +2839,29 @@ export default function LedgerTab() {
           }))
         }
         onSubmit={handleConfirmQuickDelete}
+      />
+
+      <BulkQuickDeleteModal
+        count={bulkQuickDeleteState.open ? selectedAccountIds.length : 0}
+        password={bulkQuickDeleteState.password}
+        error={bulkQuickDeleteState.error}
+        loading={bulkQuickDeleteState.loading}
+        onClose={() =>
+          setBulkQuickDeleteState({
+            open: false,
+            password: "",
+            error: "",
+            loading: false,
+          })
+        }
+        onChange={(value) =>
+          setBulkQuickDeleteState((current) => ({
+            ...current,
+            password: value,
+            error: "",
+          }))
+        }
+        onSubmit={handleConfirmBulkQuickDelete}
       />
 
       {collectState.account && (

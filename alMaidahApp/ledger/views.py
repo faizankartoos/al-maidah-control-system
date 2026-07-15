@@ -128,6 +128,53 @@ def _sync_customer_collection_to_orders(account, amount, payment_type):
     return updated_orders
 
 
+def _perform_quick_delete(account):
+    if account.account_type == "CASH":
+        return {
+            "ok": False,
+            "account_id": account.id,
+            "account_name": account.name,
+            "error": "Cash drawer is system-managed and cannot be quick deleted.",
+            "action": "blocked",
+        }
+
+    _detach_account_from_orders(account)
+
+    if account.entries.exists():
+        if account.is_active:
+            account.is_active = False
+            account.save(update_fields=["is_active"])
+
+        return {
+            "ok": True,
+            "account_id": account.id,
+            "account_name": account.name,
+            "message": "Ledger account archived safely. Transaction history was kept untouched.",
+            "action": "archived",
+        }
+
+    try:
+        account_name = account.name
+        account_id = account.id
+        account.delete()
+    except ProtectedError:
+        return {
+            "ok": False,
+            "account_id": account.id,
+            "account_name": account.name,
+            "error": "Quick delete could not finish. This account still has protected linked records.",
+            "action": "blocked",
+        }
+
+    return {
+        "ok": True,
+        "account_id": account_id,
+        "account_name": account_name,
+        "message": "Ledger account deleted.",
+        "action": "deleted",
+    }
+
+
 class AccountListCreateAPIView(APIView):
 
     def get(self, request):
@@ -251,44 +298,104 @@ class AccountQuickDeleteAPIView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if account.account_type == "CASH":
+        result = _perform_quick_delete(account)
+
+        if not result["ok"]:
             return Response(
-                {"error": "Cash drawer is system-managed and cannot be quick deleted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        _detach_account_from_orders(account)
-
-        if account.entries.exists():
-            if account.is_active:
-                account.is_active = False
-                account.save(update_fields=["is_active"])
-
-            return Response(
-                {
-                    "message": "Ledger account archived safely. Transaction history was kept untouched.",
-                    "account_name": account.name,
-                    "action": "archived",
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        try:
-            account_name = account.name
-            account.delete()
-        except ProtectedError:
-            return Response(
-                {
-                    "error": "Quick delete could not finish. This account still has protected linked records."
-                },
+                {"error": result["error"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response(
             {
-                "message": "Ledger account deleted.",
-                "account_name": account_name,
-                "action": "deleted",
+                "message": result["message"],
+                "account_name": result["account_name"],
+                "action": result["action"],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AccountBulkQuickDeleteAPIView(APIView):
+
+    @transaction.atomic
+    def post(self, request):
+        password = str(request.data.get("password") or "")
+        account_ids = request.data.get("account_ids") or []
+
+        if password != ACCOUNT_MANAGEMENT_PASSWORD:
+            return Response(
+                {"error": "Incorrect password. Bulk delete is blocked."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not isinstance(account_ids, list) or not account_ids:
+            return Response(
+                {"error": "Select at least one ledger account to delete."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        normalized_ids = []
+        for value in account_ids:
+            try:
+                normalized_ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+
+        if not normalized_ids:
+            return Response(
+                {"error": "Select at least one valid ledger account to delete."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        accounts_by_id = {
+            account.id: account
+            for account in LedgerAccount.objects.filter(id__in=normalized_ids).order_by("name", "id")
+        }
+
+        results = []
+        deleted_count = 0
+        archived_count = 0
+        blocked_count = 0
+
+        for account_id in normalized_ids:
+            account = accounts_by_id.get(account_id)
+
+            if not account:
+                results.append(
+                    {
+                        "ok": False,
+                        "account_id": account_id,
+                        "account_name": f"Account #{account_id}",
+                        "error": "Ledger account was not found.",
+                        "action": "missing",
+                    }
+                )
+                blocked_count += 1
+                continue
+
+            result = _perform_quick_delete(account)
+            results.append(result)
+
+            if result["ok"] and result["action"] == "deleted":
+                deleted_count += 1
+            elif result["ok"] and result["action"] == "archived":
+                archived_count += 1
+            else:
+                blocked_count += 1
+
+        processed_count = len(results)
+
+        return Response(
+            {
+                "message": f"Bulk delete finished. {deleted_count} deleted, {archived_count} archived, {blocked_count} blocked.",
+                "summary": {
+                    "processed_count": processed_count,
+                    "deleted_count": deleted_count,
+                    "archived_count": archived_count,
+                    "blocked_count": blocked_count,
+                },
+                "results": results,
             },
             status=status.HTTP_200_OK,
         )
