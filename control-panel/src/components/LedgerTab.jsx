@@ -146,6 +146,29 @@ function getErrorMessage(error, fallback) {
   return fallback;
 }
 
+function normalizeFieldErrors(payload) {
+  const source = payload?.errors || payload;
+
+  if (!source || Array.isArray(source) || typeof source !== "object") {
+    return {};
+  }
+
+  const normalized = {};
+
+  Object.entries(source).forEach(([key, value]) => {
+    if (Array.isArray(value) && value.length) {
+      normalized[key] = String(value[0]);
+      return;
+    }
+
+    if (typeof value === "string" && value) {
+      normalized[key] = value;
+    }
+  });
+
+  return normalized;
+}
+
 function buildParams(filters) {
   const params = {};
 
@@ -677,6 +700,7 @@ export default function LedgerTab() {
   const [accountFilters, setAccountFilters] = useState({
     search: "",
     account_type: "",
+    show_inactive: false,
   });
   const [transactionFilters, setTransactionFilters] = useState({
     search: "",
@@ -726,12 +750,25 @@ export default function LedgerTab() {
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [accountFormErrors, setAccountFormErrors] = useState({});
+
+  const clearAccountFormError = (fieldName) => {
+    setAccountFormErrors((current) => {
+      if (!current[fieldName]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[fieldName];
+      return next;
+    });
+  };
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
     try {
       const response = await api.get("/accounts/", {
-        params: { include_inactive: 1 },
+        params: { include_inactive: accountFilters.show_inactive ? 1 : 0 },
       });
       setAccounts(response.data);
     } finally {
@@ -783,6 +820,12 @@ export default function LedgerTab() {
 
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    loadAccounts().catch((requestError) => {
+      setError(getErrorMessage(requestError, "Ledger accounts failed to refresh."));
+    });
+  }, [accountFilters.show_inactive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredAccounts = useMemo(() => {
     return accounts
@@ -901,6 +944,7 @@ export default function LedgerTab() {
   const resetAccountEditor = () => {
     setEditingAccount(null);
     setAccountForm(createEmptyAccountForm());
+    setAccountFormErrors({});
   };
 
   const startVendorAccountCreate = () => {
@@ -942,8 +986,10 @@ export default function LedgerTab() {
   const handleSubmitAccount = async () => {
     setError("");
     setSuccess("");
+    setAccountFormErrors({});
 
     if (!accountForm.name.trim()) {
+      setAccountFormErrors({ name: "Account name is required." });
       setError("Enter an account name first.");
       return;
     }
@@ -969,6 +1015,8 @@ export default function LedgerTab() {
       await loadAccounts();
       setSuccess(editingAccount ? "Ledger account updated." : "Ledger account created.");
     } catch (requestError) {
+      const fieldErrors = normalizeFieldErrors(requestError?.response?.data);
+      setAccountFormErrors(fieldErrors);
       setError(getErrorMessage(requestError, editingAccount ? "Failed to update account." : "Failed to create account."));
     } finally {
       setSavingAccount(false);
@@ -988,6 +1036,7 @@ export default function LedgerTab() {
       });
       setSuccess("");
       setError("");
+      setAccountFormErrors({});
     });
   };
 
@@ -1421,7 +1470,7 @@ export default function LedgerTab() {
                   <div className="mt-1 text-sm text-slate-400">
                     {editingAccount
                       ? "Correct account details here. Opening balance changes will also shift the live balance."
-                      : "Add customer, delivery, or vendor ledger accounts directly from the panel."}
+                      : "Add customer, delivery, or vendor ledger accounts directly from the panel. Phone can stay blank if you want to keep the account manual for now."}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1461,17 +1510,26 @@ export default function LedgerTab() {
               </div>
 
               <div className="mt-4 grid gap-4">
+                {(error || Object.keys(accountFormErrors).length) ? (
+                  <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                    {error || "Please fix the highlighted account fields and try again."}
+                  </div>
+                ) : null}
+
                 <div>
                   <label className="mb-2 block text-sm text-slate-300">Account Type</label>
                   <select
                     value={accountForm.account_type}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAccountForm((current) => ({
                         ...current,
                         account_type: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
+                      }));
+                      clearAccountFormError("account_type");
+                    }}
+                    className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                      accountFormErrors.account_type ? "border-rose-500/60" : "border-slate-700"
+                    }`}
                     disabled={Boolean(editingAccount)}
                   >
                     {ACCOUNT_TYPE_OPTIONS.map((option) => (
@@ -1485,6 +1543,9 @@ export default function LedgerTab() {
                       Account type stays locked after creation so existing ledger and order links remain safe.
                     </div>
                   ) : null}
+                  {accountFormErrors.account_type ? (
+                    <div className="mt-2 text-xs text-rose-300">{accountFormErrors.account_type}</div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -1492,15 +1553,21 @@ export default function LedgerTab() {
                   <input
                     type="text"
                     value={accountForm.name}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAccountForm((current) => ({
                         ...current,
                         name: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
+                      }));
+                      clearAccountFormError("name");
+                    }}
+                    className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                      accountFormErrors.name ? "border-rose-500/60" : "border-slate-700"
+                    }`}
                     placeholder="Enter account name"
                   />
+                  {accountFormErrors.name ? (
+                    <div className="mt-2 text-xs text-rose-300">{accountFormErrors.name}</div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -1508,30 +1575,42 @@ export default function LedgerTab() {
                   <input
                     type="text"
                     value={accountForm.contact_number}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAccountForm((current) => ({
                         ...current,
                         contact_number: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
-                    placeholder="Required for customer and delivery"
+                      }));
+                      clearAccountFormError("contact_number");
+                    }}
+                    className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                      accountFormErrors.contact_number ? "border-rose-500/60" : "border-slate-700"
+                    }`}
+                    placeholder="Optional. Add it when you want phone-based matching."
                   />
+                  {accountFormErrors.contact_number ? (
+                    <div className="mt-2 text-xs text-rose-300">{accountFormErrors.contact_number}</div>
+                  ) : null}
                 </div>
 
                 <div>
                   <label className="mb-2 block text-sm text-slate-300">Address</label>
                   <textarea
                     value={accountForm.address}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAccountForm((current) => ({
                         ...current,
                         address: event.target.value,
-                      }))
-                    }
-                    className="min-h-[110px] w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
+                      }));
+                      clearAccountFormError("address");
+                    }}
+                    className={`min-h-[110px] w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                      accountFormErrors.address ? "border-rose-500/60" : "border-slate-700"
+                    }`}
                     placeholder="Optional"
                   />
+                  {accountFormErrors.address ? (
+                    <div className="mt-2 text-xs text-rose-300">{accountFormErrors.address}</div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -1542,19 +1621,25 @@ export default function LedgerTab() {
                     type="number"
                     step="0.01"
                     value={accountForm.opening_balance}
-                    onChange={(event) =>
+                    onChange={(event) => {
                       setAccountForm((current) => ({
                         ...current,
                         opening_balance: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500"
+                      }));
+                      clearAccountFormError("opening_balance");
+                    }}
+                    className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                      accountFormErrors.opening_balance ? "border-rose-500/60" : "border-slate-700"
+                    }`}
                     placeholder="0.00"
                   />
                   {editingAccount ? (
                     <div className="mt-2 text-xs text-slate-500">
                       Current computed balance updates from this opening balance plus all existing ledger entries.
                     </div>
+                  ) : null}
+                  {accountFormErrors.opening_balance ? (
+                    <div className="mt-2 text-xs text-rose-300">{accountFormErrors.opening_balance}</div>
                   ) : null}
                 </div>
 
@@ -1646,6 +1731,29 @@ export default function LedgerTab() {
                 <option value="VENDOR">Vendor</option>
                 <option value="CASH">Cash Drawer</option>
               </select>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+              <div className="text-sm text-slate-300">
+                {accountFilters.show_inactive
+                  ? "Archived / inactive accounts are visible right now."
+                  : "Archived / inactive accounts are hidden so deleted accounts get out of your way."}
+              </div>
+              <button
+                onClick={() =>
+                  setAccountFilters((current) => ({
+                    ...current,
+                    show_inactive: !current.show_inactive,
+                  }))
+                }
+                className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
+                  accountFilters.show_inactive
+                    ? "border border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"
+                    : "border border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500 hover:text-white"
+                }`}
+              >
+                {accountFilters.show_inactive ? "Hide Archived" : "Show Archived"}
+              </button>
             </div>
 
             <div className="mt-4 space-y-3">

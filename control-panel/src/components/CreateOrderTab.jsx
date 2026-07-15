@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import api, { buildApiUrl } from "../services/api";
 import AreaAutocomplete from "./AreaAutocomplete";
 import CustomerPhoneAutocomplete from "./CustomerPhoneAutocomplete";
+import { printOrderBill } from "../utils/orderPrinting";
 
 const ORDER_TYPE_META = {
   DINE_IN: {
@@ -91,6 +92,7 @@ export default function OrdersTab({ externalMode = false }) {
   const [showAmountModal,setShowAmountModal] = useState(false)
   const [showDeliveryChargePrompt,setShowDeliveryChargePrompt] = useState(false)
   const [deliveryChargePromptValue,setDeliveryChargePromptValue] = useState("")
+  const [postOrderPrintPrompt, setPostOrderPrintPrompt] = useState(null)
 
   const [paymentMethod,setPaymentMethod] = useState(null)
   const [amountReceived,setAmountReceived] = useState("")
@@ -311,8 +313,33 @@ export default function OrdersTab({ externalMode = false }) {
   setShowPaymentModal(false)
   setShowMethodModal(false)
   setShowAmountModal(false)
+  setPostOrderPrintPrompt(null)
 
 }
+
+  function finishSuccessfulOrder(successMessage){
+    showToast(successMessage, "success")
+    resetOrderScreen()
+  }
+
+  async function handlePrintDecision(shouldPrint){
+    if(!postOrderPrintPrompt){
+      return
+    }
+
+    const promptState = postOrderPrintPrompt
+    setPostOrderPrintPrompt(null)
+
+    if(shouldPrint){
+      try{
+        await printOrderBill(promptState.orderId)
+      }catch{
+        showToast("Order placed, but printing failed.","warning",{ position: "center" })
+      }
+    }
+
+    finishSuccessfulOrder(promptState.successMessage)
+  }
 
   async function submitOrder(finalMode,finalMethod,amount,extra = {}){
 
@@ -368,15 +395,16 @@ export default function OrdersTab({ externalMode = false }) {
       const data = await res.json()
 
       if(res.ok){
+        const successMessage = data.acceptance_status === "PENDING"
+          ? "External order submitted for acceptance"
+          : Number(data.advance_applied || 0) > 0
+            ? `Order placed. Rs ${formatMoney(data.advance_applied)} adjusted from customer advance.`
+            : "Order placed"
 
-        if (data.acceptance_status === "PENDING") {
-          showToast("External order submitted for acceptance","success")
-        } else if (Number(data.advance_applied || 0) > 0) {
-          showToast(`Order placed. Rs ${formatMoney(data.advance_applied)} adjusted from customer advance.`, "success")
-        } else {
-          showToast("Order placed","success")
-        }
-        resetOrderScreen()
+        setPostOrderPrintPrompt({
+          orderId: data.order_id,
+          successMessage,
+        })
 
       }
       else{
@@ -664,6 +692,34 @@ Assign Delivery Boy
 </div>
 	)
 
+  const PostOrderPrintPrompt = postOrderPrintPrompt && (
+<div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70 px-4">
+  <div className="w-full max-w-md rounded-2xl border border-sky-500/30 bg-slate-950 p-6 text-white shadow-[0_24px_60px_rgba(15,23,42,0.45)]">
+    <div className="text-xs uppercase tracking-[0.28em] text-sky-300">Print Bill</div>
+    <h3 className="mt-2 text-xl font-semibold">Print this bill now?</h3>
+    <p className="mt-2 text-sm leading-6 text-slate-300">
+      Choose Yes to open the bill instantly, or No to continue with the normal order flow.
+    </p>
+
+    <div className="mt-5 grid gap-3 sm:grid-cols-2">
+      <button
+        onClick={()=>handlePrintDecision(true)}
+        className="rounded-xl bg-sky-500 px-4 py-3 font-semibold text-slate-950 transition hover:brightness-105"
+      >
+        Yes, Print Bill
+      </button>
+
+      <button
+        onClick={()=>handlePrintDecision(false)}
+        className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-white transition hover:border-slate-500 hover:bg-slate-800"
+      >
+        No
+      </button>
+    </div>
+  </div>
+</div>
+  )
+
 	  if(!decisionConfirmed){
 
 	  return(
@@ -671,6 +727,7 @@ Assign Delivery Boy
 	    {ToastUI}
 	    {DeliveryModal}
       {DeliveryChargePrompt}
+      {PostOrderPrintPrompt}
 
 	    <div className="rounded-[28px] border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.16),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.96),_rgba(15,23,42,0.84))] p-6 shadow-[0_24px_60px_rgba(15,23,42,0.45)]">
 	      <div className="flex flex-col gap-4 border-b border-slate-800 pb-6 md:flex-row md:items-end md:justify-between">
@@ -1016,6 +1073,7 @@ Assign Delivery Boy
     {ToastUI}
     {DeliveryModal}
     {DeliveryChargePrompt}
+    {PostOrderPrintPrompt}
 
     
 

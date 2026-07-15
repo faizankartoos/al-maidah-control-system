@@ -4,7 +4,7 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum
 from rest_framework import status
 from rest_framework.response import Response
@@ -19,6 +19,43 @@ from orders.models import Order, OrderPayment
 
 ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah"
 UNDO_REFERENCE_PREFIX = "UNDO-ENTRY-"
+
+
+def _extract_error_message(error_payload, fallback="Request failed."):
+    if isinstance(error_payload, str):
+        return error_payload
+
+    if isinstance(error_payload, list) and error_payload:
+        return _extract_error_message(error_payload[0], fallback)
+
+    if isinstance(error_payload, dict):
+        for value in error_payload.values():
+            message = _extract_error_message(value, fallback)
+            if message:
+                return message
+
+    return fallback
+
+
+def _account_integrity_error_message(exc):
+    message = str(exc).lower()
+
+    if "contact_number" in message:
+        return {
+            "error": "This phone number is already linked to another ledger account.",
+            "errors": {
+                "contact_number": ["This phone number is already linked to another ledger account."],
+            },
+        }
+
+    return {
+        "error": "Ledger account could not be saved because the data conflicts with an existing record.",
+        "errors": {
+            "non_field_errors": [
+                "Ledger account could not be saved because the data conflicts with an existing record.",
+            ],
+        },
+    }
 
 
 def _detach_account_from_orders(account):
@@ -122,8 +159,23 @@ class AccountListCreateAPIView(APIView):
 
     def post(self, request):
         serializer = AccountWriteSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        account = serializer.save()
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": _extract_error_message(serializer.errors, "Failed to create account."),
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account = serializer.save()
+        except IntegrityError as exc:
+            return Response(
+                _account_integrity_error_message(exc),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         return Response(AccountSerializer(account).data, status=status.HTTP_201_CREATED)
 
 
@@ -143,8 +195,23 @@ class AccountDetailAPIView(APIView):
             )
 
         serializer = AccountWriteSerializer(account, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        updated_account = serializer.save()
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": _extract_error_message(serializer.errors, "Failed to update account."),
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            updated_account = serializer.save()
+        except IntegrityError as exc:
+            return Response(
+                _account_integrity_error_message(exc),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         return Response(AccountSerializer(updated_account).data)
 
     def delete(self, request, account_id):

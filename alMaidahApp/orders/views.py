@@ -12,8 +12,9 @@ from .services import (
     sync_external_order_acceptance,
     update_order_details,
 )
-from django.db.models import Q, Sum
+from django.db.models import DecimalField, Prefetch, Q, Sum, Value
 from django.db import transaction
+from django.db.models.functions import Coalesce
 
 
 # Second
@@ -1258,8 +1259,24 @@ class OrdersFilterAPIView(APIView):
         qs = (
             Order.objects
             .filter(acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES)
+            .annotate(
+                amount_paid=Coalesce(
+                    Sum("payments__amount"),
+                    Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                )
+            )
             .select_related("submitted_by", "area")
-            .prefetch_related("items", "payments")
+            .prefetch_related(
+                Prefetch(
+                    "items",
+                    queryset=OrderItem.objects.only("id", "order_id", "item_name", "quantity"),
+                ),
+                Prefetch(
+                    "payments",
+                    queryset=OrderPayment.objects.only("id", "order_id", "payment_type").order_by("-id"),
+                ),
+            )
         )
 
         if filter_type in ["PROCESSING","READY","COMPLETED","CANCELLED"]:
@@ -1300,14 +1317,9 @@ class OrdersFilterAPIView(APIView):
         data = []
 
         for o in qs:
-
-            payment_mode = None
-
-            if o.payments.exists():
-                payment_mode = o.payments.last().payment_type
-
-            amount_paid = o.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-            remaining_amount = o.total_amount - amount_paid
+            prefetched_payments = list(o.payments.all())
+            payment_mode = prefetched_payments[0].payment_type if prefetched_payments else None
+            remaining_amount = o.total_amount - Decimal(str(o.amount_paid or "0.00"))
 
             if remaining_amount < 0:
                 remaining_amount = Decimal("0.00")

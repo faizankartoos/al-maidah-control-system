@@ -275,6 +275,65 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertEqual(LedgerAccount.objects.count(), 1)
         self.assertEqual(LedgerAccount.objects.get().account_type, "DELIVERY")
 
+    def test_can_create_customer_account_without_phone_for_manual_use(self):
+        response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Manual Customer",
+                "account_type": "CUSTOMER",
+                "contact_number": "",
+                "address": "Walk-in ledger use",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        account = LedgerAccount.objects.get(name="Manual Customer")
+        self.assertIsNone(account.contact_number)
+
+    def test_create_account_returns_clear_phone_error_when_number_already_exists(self):
+        LedgerAccount.objects.create(
+            name="Existing Customer",
+            account_type="CUSTOMER",
+            contact_number="7000001234",
+        )
+
+        response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "New Customer",
+                "account_type": "CUSTOMER",
+                "contact_number": "7000001234",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("phone number", response.json()["error"].lower())
+        self.assertIn("contact_number", response.json()["errors"])
+
+    def test_create_vendor_returns_clear_duplicate_name_error(self):
+        LedgerAccount.objects.create(
+            name="Metro Supplier",
+            account_type="VENDOR",
+        )
+
+        response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Metro Supplier",
+                "account_type": "VENDOR",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already exists", response.json()["error"].lower())
+        self.assertIn("name", response.json()["errors"])
+
     def test_cash_drawer_cannot_be_created_manually(self):
         response = self.client.post(
             "/api/accounts/",
@@ -364,6 +423,24 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertEqual(customer.address, "Updated Address")
         self.assertEqual(customer.opening_balance, Decimal("35.00"))
         self.assertEqual(customer.balance, Decimal("45.00"))
+
+    def test_can_clear_phone_number_during_account_edit(self):
+        customer = LedgerAccount.objects.create(
+            name="Clear Phone",
+            account_type="CUSTOMER",
+            contact_number="7000007777",
+        )
+
+        response = self.client.patch(
+            f"/api/accounts/{customer.id}/",
+            data={"contact_number": ""},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        customer.refresh_from_db()
+        self.assertIsNone(customer.contact_number)
 
     def test_cannot_change_account_type_after_creation(self):
         customer = LedgerAccount.objects.create(

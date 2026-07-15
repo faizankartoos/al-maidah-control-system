@@ -43,6 +43,11 @@ class AccountWriteSerializer(serializers.ModelSerializer):
             "is_active",
         ]
         read_only_fields = ["id"]
+        extra_kwargs = {
+            "contact_number": {
+                "validators": [],
+            },
+        }
 
     def validate_name(self, value):
         cleaned = value.strip()
@@ -88,16 +93,10 @@ class AccountWriteSerializer(serializers.ModelSerializer):
             )
 
         account_type = attrs.get("account_type") or getattr(self.instance, "account_type", None)
-        contact_number = attrs.get("contact_number", getattr(self.instance, "contact_number", None))
 
         if account_type == "CASH":
             raise serializers.ValidationError(
                 {"account_type": "Cash drawer is system-managed and should not be created manually."}
-            )
-
-        if account_type in {"CUSTOMER", "DELIVERY"} and not contact_number:
-            raise serializers.ValidationError(
-                {"contact_number": "Phone number is required for customer and delivery accounts."}
             )
 
         return attrs
