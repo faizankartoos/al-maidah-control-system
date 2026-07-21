@@ -390,7 +390,7 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
             data=json.dumps({
                 "order_type": "DINE_IN",
                 "table_number": "T2",
-                "discount": "5.00",
+                "discount": "0.00",
                 "delivery_charge": "0.00",
                 "items": [
                     {"name": "Tea", "qty": 2, "price": "20.00"}
@@ -405,7 +405,86 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
 
         self.assertEqual(order.order_status, "READY")
         self.assertEqual(order.table_number, "T2")
-        self.assertEqual(order.total_amount, Decimal("35.00"))
+        self.assertEqual(order.total_amount, Decimal("40.00"))
+
+    def test_update_order_rejects_discount_when_customer_history_is_too_short(self):
+
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Customer",
+            customer_phone="9900000710",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Tea",
+            quantity=1,
+            price=Decimal("300.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "customer_name": "Customer",
+                "customer_phone": "9900000710",
+                "discount": "1.00",
+                "items": [
+                    {"name": "Tea", "qty": 2, "price": "300.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["errors"]["discount"], "Discount not allowed for this order")
+
+    def test_update_order_applies_loyalty_discount_amount_from_customer_history(self):
+
+        for index in range(3):
+            Order.objects.create(
+                order_type="TAKEAWAY",
+                order_status="COMPLETED",
+                payment_status="PAID",
+                customer_name="Loyal Customer",
+                customer_phone="9900000711",
+                total_amount=Decimal("200.00") + Decimal(str(index)),
+            )
+
+        order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Loyal Customer",
+            customer_phone="9900000711",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Burger",
+            quantity=1,
+            price=Decimal("300.00")
+        )
+
+        response = self.client.patch(
+            f"/api/orders/{order.id}/update/",
+            data=json.dumps({
+                "order_type": "TAKEAWAY",
+                "customer_name": "Loyal Customer",
+                "customer_phone": "9900000711",
+                "discount": "1.00",
+                "items": [
+                    {"name": "Burger", "qty": 2, "price": "300.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        self.assertEqual(order.discount, Decimal("12.00"))
+        self.assertEqual(order.total_amount, Decimal("588.00"))
 
     def test_delivery_update_stores_selected_area(self):
 
@@ -1024,6 +1103,38 @@ class ExternalOrderAcceptanceTests(AuthenticatedOrdersAPITestCase):
 
 
 class AreaLookupTests(AuthenticatedOrdersAPITestCase):
+
+    def test_create_order_uses_saved_area_delivery_charge(self):
+        area = Area.objects.create(name="Bagh", delivery_charge=Decimal("35.00"))
+        delivery_boy = LedgerAccount.objects.create(
+            name="Rider",
+            account_type="DELIVERY",
+            contact_number="7000000450",
+        )
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DELIVERY",
+                "payment_mode": "PAY_LATER",
+                "delivery_boy_id": delivery_boy.id,
+                "phone": "9900000450",
+                "name": "Customer",
+                "address": "Main road",
+                "area_id": area.id,
+                "delivery_charge": "0.00",
+                "items": [
+                    {"name": "Pizza", "qty": 1, "price": "100.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+        self.assertEqual(order.delivery_charge, Decimal("35.00"))
+        self.assertEqual(order.total_amount, Decimal("135.00"))
 
     def test_area_lookup_returns_matches_for_single_letter_search(self):
         Area.objects.create(name="Chadoora")
@@ -1771,3 +1882,90 @@ class OrderFilterTests(AuthenticatedOrdersAPITestCase):
 
         self.assertIn(paid_ready.id, paid_ids)
         self.assertIn(unpaid_completed.id, unpaid_ids)
+
+
+class BulkCollectOrdersSettingsTests(AuthenticatedOrdersAPITestCase):
+
+    def test_bulk_collect_marks_eligible_orders_paid_and_skips_ledger_managed_completed_orders(self):
+        customer_account = LedgerAccount.objects.create(
+            name="Customer Ledger",
+            account_type="CUSTOMER",
+            contact_number="9900000123",
+        )
+
+        collectible_order = Order.objects.create(
+            order_type="DINE_IN",
+            order_status="READY",
+            payment_status="UNPAID",
+            table_number="Table 5",
+            subtotal=Decimal("200.00"),
+            total_amount=Decimal("200.00"),
+        )
+        OrderItem.objects.create(
+            order=collectible_order,
+            item_name="Burger",
+            quantity=2,
+            price=Decimal("100.00"),
+        )
+
+        skipped_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_phone="9900000123",
+            customer_account=customer_account,
+            subtotal=Decimal("150.00"),
+            total_amount=Decimal("150.00"),
+        )
+        OrderItem.objects.create(
+            order=skipped_order,
+            item_name="Pizza",
+            quantity=1,
+            price=Decimal("150.00"),
+        )
+
+        response = self.client.post(
+            "/api/settings/collect-orders/",
+            data=json.dumps(
+                {
+                    "from_date": timezone.localdate().isoformat(),
+                    "to_date": timezone.localdate().isoformat(),
+                    "payment_type": "CASH",
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        collectible_order.refresh_from_db()
+        skipped_order.refresh_from_db()
+
+        self.assertEqual(collectible_order.payment_status, "PAID")
+        self.assertEqual(collectible_order.payments.count(), 1)
+        self.assertEqual(skipped_order.payment_status, "UNPAID")
+        self.assertEqual(skipped_order.payments.count(), 0)
+
+        payload = response.json()
+        self.assertEqual(payload["summary"]["collected_count"], 1)
+        self.assertEqual(payload["summary"]["skipped_count"], 1)
+        self.assertEqual(
+            payload["skipped_orders"][0]["reason"],
+            "Completed unpaid orders assigned to ledger must be collected from Ledger.",
+        )
+
+    def test_bulk_collect_rejects_invalid_payment_mode(self):
+        response = self.client.post(
+            "/api/settings/collect-orders/",
+            data=json.dumps(
+                {
+                    "from_date": timezone.localdate().isoformat(),
+                    "to_date": timezone.localdate().isoformat(),
+                    "payment_type": "MIXED",
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "Select a valid payment mode.")

@@ -6,6 +6,7 @@ TAB_PERMISSIONS = (
     ("MENU", "Menu"),
     ("ORDERS", "Orders"),
     ("MANAGE_ORDERS", "Manage Orders"),
+    ("SETTINGS", "Settings"),
     ("INVENTORY", "Inventory"),
     ("LEDGER", "Ledger"),
     ("EXPENSES", "Expenses"),

@@ -15,6 +15,11 @@ def normalize_area_name(value):
 class Area(models.Model):
     name = models.CharField(max_length=120, unique=True)
     normalized_name = models.CharField(max_length=120, unique=True, editable=False)
+    delivery_charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -142,8 +147,10 @@ class Order(models.Model):
         decimal_places=2,
         default=0
     )
+    update_count = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(
         null=True,
         blank=True

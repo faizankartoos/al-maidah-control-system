@@ -1,6 +1,7 @@
 import MenuTab from "../components/MenuTab";
 import CreateOrderTab from "../components/CreateOrderTab";
 import ManageOrdersTab from "../components/ManageOrdersTab";
+import SettingsTab from "../components/SettingsTab";
 import InventoryTab from "../components/InventoryTab";
 import LedgerTab from "../components/LedgerTab";
 import ExpensesTab from "../components/ExpensesTab";
@@ -24,6 +25,11 @@ export const TAB_DEFINITIONS = [
     key: "MANAGE_ORDERS",
     label: "Manage Orders",
     component: ManageOrdersTab,
+  },
+  {
+    key: "SETTINGS",
+    label: "Settings",
+    component: SettingsTab,
   },
   {
     key: "INVENTORY",

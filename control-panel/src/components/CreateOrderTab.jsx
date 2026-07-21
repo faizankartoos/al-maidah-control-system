@@ -3,6 +3,11 @@ import api, { buildApiUrl } from "../services/api";
 import AreaAutocomplete from "./AreaAutocomplete";
 import CustomerPhoneAutocomplete from "./CustomerPhoneAutocomplete";
 import { printOrderBill } from "../utils/orderPrinting";
+import {
+  calculateLoyaltyDiscountAmount,
+  formatDeliveryChargeLabel,
+  getLoyaltyDiscountPercent,
+} from "../utils/orderPricing";
 
 const ORDER_TYPE_META = {
   DINE_IN: {
@@ -178,6 +183,13 @@ export default function OrdersTab({ externalMode = false }) {
 
   },[orderType])
 
+  useEffect(() => {
+    if(orderType !== "DELIVERY"){
+      setDeliveryCharge(0)
+      setSelectedDeliveryBoy("")
+    }
+  }, [orderType])
+
 
   function showToast(message,type="success",options = {}){
 
@@ -219,6 +231,7 @@ export default function OrdersTab({ externalMode = false }) {
       if(!selectedAreaId && customer?.area_id){
         setSelectedAreaId(String(customer.area_id))
         setSelectedAreaName(customer.area_name || "")
+        setDeliveryCharge(Number(customer.area_delivery_charge || 0))
       }
     }
   }
@@ -291,6 +304,15 @@ export default function OrdersTab({ externalMode = false }) {
 
   const discountAmount = Number(discount || 0)
   const deliveryChargeAmount = Number(deliveryCharge || 0)
+  const orderHistoryCount = Number(matchedCustomer?.order_count || 0)
+  const preDiscountBillAmount = subtotal + deliveryChargeAmount
+  const eligibleDiscountPercent = orderHistoryCount >= 3
+    ? getLoyaltyDiscountPercent(preDiscountBillAmount)
+    : 0
+  const eligibleDiscountAmount = orderHistoryCount >= 3
+    ? calculateLoyaltyDiscountAmount(preDiscountBillAmount)
+    : 0
+  const canApplyLoyaltyDiscount = eligibleDiscountAmount > 0
   const total = subtotal - discountAmount + deliveryChargeAmount
   const totalItems = orderItems.reduce((sum,i)=>sum+i.qty,0)
   const shouldShowPhoneField = Boolean(orderType)
@@ -361,6 +383,40 @@ export default function OrdersTab({ externalMode = false }) {
     showToast(successMessage, "success")
     resetOrderScreen()
   }
+
+  function handleDiscountInput(nextValue){
+    const parsedValue = Number(nextValue || 0)
+
+    if(!parsedValue){
+      setDiscount("")
+      return
+    }
+
+    if(!canApplyLoyaltyDiscount){
+      showToast("Discount not allowed for this order","warning",{ position: "center" })
+      setDiscount("")
+      return
+    }
+
+    setDiscount(Number(eligibleDiscountAmount.toFixed(2)))
+  }
+
+  useEffect(() => {
+    if(discountAmount <= 0){
+      return
+    }
+
+    if(!canApplyLoyaltyDiscount){
+      setDiscount("")
+      return
+    }
+
+    const normalizedDiscount = Number(eligibleDiscountAmount.toFixed(2))
+
+    if(Math.abs(discountAmount - normalizedDiscount) > 0.009){
+      setDiscount(normalizedDiscount)
+    }
+  }, [canApplyLoyaltyDiscount, discountAmount, eligibleDiscountAmount])
 
   async function handlePrintDecision(shouldPrint){
     if(!postOrderPrintPrompt){
@@ -472,21 +528,16 @@ export default function OrdersTab({ externalMode = false }) {
     return
   }
 
+  if(orderType === "DELIVERY" && !selectedAreaId){
+    showToast("Select area for delivery order is required","error",{ position: "center" })
+    return
+  }
+
   proceedToPlacementFlow()
 
   }
 
-  function proceedToPlacementFlow(skipDeliveryChargeCheck = false){
-
-  if(
-    orderType === "DELIVERY" &&
-    !skipDeliveryChargeCheck &&
-    Number(deliveryCharge || 0) === 0
-  ){
-    setDeliveryChargePromptValue("")
-    setShowDeliveryChargePrompt(true)
-    return
-  }
+  function proceedToPlacementFlow(){
 
   if(orderType === "DELIVERY"){
     setShowDeliveryModal(true)
@@ -909,10 +960,12 @@ Assign Delivery Boy
 	                      onSelectArea={(area) => {
 	                        setSelectedAreaId(String(area.id))
 	                        setSelectedAreaName(area.name)
+                          setDeliveryCharge(Number(area.delivery_charge || 0))
 	                      }}
 	                      onClearArea={() => {
 	                        setSelectedAreaId("")
 	                        setSelectedAreaName("")
+                          setDeliveryCharge(0)
 	                      }}
 	                      helperText="This is the required delivery zone. The full address below is optional for house, lane, or landmark details."
 	                    />
@@ -1358,26 +1411,32 @@ Assign Delivery Boy
 	              ))}
 	            </div>
 
-	            <div className="mt-4 space-y-3 border-t border-slate-800 pt-4">
-	              <div className="flex items-center justify-between gap-3">
-	                <span className="text-sm text-slate-300">Discount</span>
-	                <input
-	                  type="number"
-	                  value={discount}
-	                  onChange={(e)=>setDiscount(Number(e.target.value))}
-	                  className="w-28 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-right outline-none transition focus:border-emerald-500"
-	                />
-	              </div>
+	              <div className="mt-4 space-y-3 border-t border-slate-800 pt-4">
+	                <div className="flex items-center justify-between gap-3">
+	                  <span className="text-sm text-slate-300">Discount</span>
+	                  <input
+	                    type="number"
+	                    value={discount}
+	                    onChange={(e)=>handleDiscountInput(e.target.value)}
+	                    className="w-28 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-right outline-none transition focus:border-emerald-500"
+	                  />
+	                </div>
+                  <div className="text-xs text-slate-400">
+                    {!phone.trim()
+                      ? "Enter customer phone to check discount eligibility."
+                      : orderHistoryCount < 3
+                        ? `Discount unlocks after 3 linked orders. Current history: ${orderHistoryCount}.`
+                        : !canApplyLoyaltyDiscount
+                          ? "This customer is eligible, but the bill must reach Rs 500 for a loyalty discount."
+                          : `Eligible loyalty discount: ${eligibleDiscountPercent}% = Rs ${formatMoney(eligibleDiscountAmount)}. Enter any positive value to apply it automatically.`}
+                  </div>
 
 	              {orderType === "DELIVERY" && (
 	                <div className="flex items-center justify-between gap-3">
 	                  <span className="text-sm text-slate-300">Delivery Charge</span>
-	                  <input
-	                    type="number"
-	                    value={deliveryCharge}
-	                    onChange={(e)=>setDeliveryCharge(Number(e.target.value))}
-	                    className="w-28 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-right outline-none transition focus:border-emerald-500"
-	                  />
+	                  <div className="w-28 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-right text-sm font-semibold text-emerald-200">
+                      {formatDeliveryChargeLabel(orderType, deliveryChargeAmount)}
+                    </div>
 	                </div>
 	              )}
 

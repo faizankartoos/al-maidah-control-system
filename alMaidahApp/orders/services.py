@@ -10,6 +10,9 @@ from ledger.models import LedgerAccount
 from .models import OrderPayment, Order, OrderItem
 
 
+MONEY_QUANTUM = Decimal("0.01")
+
+
 class ChangeConfirmationRequired(ValueError):
 
     def __init__(self, change_amount):
@@ -38,6 +41,12 @@ def get_customer_context_by_phone(phone):
         .order_by("-created_at", "-id")
         .first()
     )
+    order_count = (
+        Order.objects
+        .filter(customer_phone=cleaned_phone)
+        .exclude(order_status="CANCELLED")
+        .count()
+    )
 
     if not customer_account and not latest_order:
         return None
@@ -60,10 +69,112 @@ def get_customer_context_by_phone(phone):
         ),
         "area_id": latest_order.area_id if latest_order else None,
         "area_name": latest_order.area.name if latest_order and latest_order.area else "",
+        "area_delivery_charge": (
+            latest_order.area.delivery_charge
+            if latest_order and latest_order.area
+            else Decimal("0.00")
+        ),
         "current_balance": current_balance,
         "advance_available": advance_available,
         "has_advance": advance_available > 0,
         "has_outstanding": current_balance > 0,
+        "order_count": order_count,
+    }
+
+
+def get_order_amount_paid(order):
+    return order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+
+
+def get_order_remaining_amount(order):
+    remaining = Decimal(str(order.total_amount)) - Decimal(str(get_order_amount_paid(order)))
+    if remaining < 0:
+        return Decimal("0.00")
+    return remaining
+
+
+def compute_subtotal_from_items(items):
+    subtotal = Decimal("0.00")
+
+    for item in items or []:
+        subtotal += Decimal(str(item["price"])) * int(item["qty"])
+
+    return subtotal.quantize(MONEY_QUANTUM)
+
+
+def resolve_delivery_charge(order_type, area):
+    if order_type != "DELIVERY" or not area:
+        return Decimal("0.00")
+
+    return Decimal(str(area.delivery_charge or "0.00")).quantize(MONEY_QUANTUM)
+
+
+def get_customer_order_count(phone, exclude_order_id=None):
+    cleaned_phone = (phone or "").strip()
+
+    if not cleaned_phone:
+        return 0
+
+    queryset = Order.objects.filter(customer_phone=cleaned_phone).exclude(order_status="CANCELLED")
+
+    if exclude_order_id:
+        queryset = queryset.exclude(id=exclude_order_id)
+
+    return queryset.count()
+
+
+def get_loyalty_discount_percentage(base_total):
+    amount = Decimal(str(base_total))
+
+    if amount < Decimal("500.00"):
+        return 0
+
+    return int(amount // Decimal("500.00")) + 1
+
+
+def calculate_loyalty_discount_amount(base_total):
+    percentage = get_loyalty_discount_percentage(base_total)
+
+    if percentage <= 0:
+        return Decimal("0.00")
+
+    amount = (Decimal(str(base_total)) * Decimal(percentage)) / Decimal("100")
+    return amount.quantize(MONEY_QUANTUM)
+
+
+def resolve_loyalty_discount(
+    *,
+    requested_discount,
+    customer_phone,
+    base_total,
+    exclude_order_id=None,
+):
+    requested_discount = Decimal(str(requested_discount or "0.00"))
+    order_count = get_customer_order_count(customer_phone, exclude_order_id=exclude_order_id)
+    allowed_discount = Decimal("0.00")
+    discount_percentage = 0
+
+    if order_count >= 3:
+        discount_percentage = get_loyalty_discount_percentage(base_total)
+        allowed_discount = calculate_loyalty_discount_amount(base_total)
+
+    if requested_discount > 0:
+        if allowed_discount <= 0:
+            raise ValueError("Discount not allowed for this order")
+
+        return {
+            "discount": allowed_discount,
+            "order_count": order_count,
+            "discount_percentage": discount_percentage,
+            "allowed": True,
+        }
+
+    return {
+        "discount": Decimal("0.00"),
+        "order_count": order_count,
+        "discount_percentage": discount_percentage,
+        "allowed": allowed_discount > 0,
+        "allowed_discount": allowed_discount,
     }
 
 
@@ -342,7 +453,8 @@ def update_order_details(
     discount=Decimal("0.00"),
     delivery_charge=Decimal("0.00"),
     delivery_boy=None,
-    items=None
+    items=None,
+    increment_update_count=True,
 ):
 
     items = items or []
@@ -365,6 +477,8 @@ def update_order_details(
     order.delivery_charge = delivery_charge
     order.table_number = table_number or None
     order.delivery_boy = delivery_boy
+    if increment_update_count:
+        order.update_count += 1
 
     if order_type == "DINE_IN":
         order.delivery_address = None
@@ -391,6 +505,7 @@ def update_order_details(
         "delivery_charge",
         "table_number",
         "delivery_boy",
+        "update_count",
     ])
 
     order.items.all().delete()

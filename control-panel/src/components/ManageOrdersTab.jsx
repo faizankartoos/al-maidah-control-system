@@ -4,6 +4,11 @@ import { PanelLoader } from "./SystemLoader";
 import AreaAutocomplete from "./AreaAutocomplete";
 import CustomerPhoneAutocomplete from "./CustomerPhoneAutocomplete";
 import { printOrderBill } from "../utils/orderPrinting";
+import {
+  calculateLoyaltyDiscountAmount,
+  formatDeliveryChargeLabel,
+  getLoyaltyDiscountPercent,
+} from "../utils/orderPricing";
 
 const today = new Date().toISOString().split("T")[0];
 
@@ -163,19 +168,33 @@ function formatFullDateTime(value) {
   });
 }
 
-function SectionCard({ title, subtitle, icon, children, className = "" }) {
+function SectionCard({ title, subtitle, icon, children, className = "", dayTheme = false }) {
   return (
-    <section className={`overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/75 shadow-lg shadow-black/20 ${className}`}>
-      <div className="flex items-start gap-3 border-b border-slate-800/90 bg-slate-950/50 px-5 py-4">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-sky-500/20 bg-sky-500/10 text-sky-200">
+    <section className={`overflow-hidden rounded-3xl border ${
+      dayTheme
+        ? "border-slate-200 bg-white shadow-[0_20px_55px_rgba(148,163,184,0.12)]"
+        : "border-slate-800 bg-slate-900/75 shadow-lg shadow-black/20"
+    } ${className}`}>
+      <div className={`flex items-start gap-3 border-b px-5 py-4 ${
+        dayTheme
+          ? "border-slate-200 bg-slate-50/80"
+          : "border-slate-800/90 bg-slate-950/50"
+      }`}>
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ${
+          dayTheme
+            ? "border-sky-200 bg-sky-50 text-sky-700"
+            : "border-sky-500/20 bg-sky-500/10 text-sky-200"
+        }`}>
           {icon}
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-100">
+          <div className={`text-sm font-semibold uppercase tracking-[0.22em] ${
+            dayTheme ? "text-slate-900" : "text-slate-100"
+          }`}>
             {title}
           </div>
           {subtitle && (
-            <div className="mt-1 text-xs text-slate-400">
+            <div className={`mt-1 text-xs ${dayTheme ? "text-slate-500" : "text-slate-400"}`}>
               {subtitle}
             </div>
           )}
@@ -189,18 +208,54 @@ function SectionCard({ title, subtitle, icon, children, className = "" }) {
   );
 }
 
-function DetailField({ label, value, valueClassName = "", className = "" }) {
+function DetailField({ label, value, valueClassName = "", className = "", dayTheme = false }) {
   const displayValue = value === null || value === undefined || value === "" ? "-" : value;
 
   return (
-    <div className={`rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 ${className}`}>
-      <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+    <div className={`rounded-2xl border px-4 py-3 ${
+      dayTheme
+        ? "border-slate-200 bg-slate-50"
+        : "border-slate-800 bg-slate-950/70"
+    } ${className}`}>
+      <div className={`text-[11px] font-semibold uppercase tracking-[0.24em] ${
+        dayTheme ? "text-slate-500" : "text-slate-500"
+      }`}>
         {label}
       </div>
-      <div className={`mt-2 text-sm font-medium text-slate-100 ${valueClassName}`}>
+      <div className={`mt-2 text-sm font-medium ${
+        dayTheme ? "text-slate-900" : "text-slate-100"
+      } ${valueClassName}`}>
         {displayValue}
       </div>
     </div>
+  );
+}
+
+function DayMetricCard({ label, value, accent = "slate" }) {
+  const accentClasses = {
+    slate: "border-slate-200 bg-white text-slate-900",
+    sky: "border-sky-200 bg-sky-50 text-sky-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
+    rose: "border-rose-200 bg-rose-50 text-rose-900",
+  };
+
+  return (
+    <div className={`rounded-3xl border p-4 shadow-[0_10px_35px_rgba(148,163,184,0.08)] ${accentClasses[accent] || accentClasses.slate}`}>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-500">{label}</div>
+      <div className="mt-2 text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function OrderActionButton({ children, className = "", ...props }) {
+  return (
+    <button
+      {...props}
+      className={`rounded-2xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+    >
+      {children}
+    </button>
   );
 }
 export default function ManageOrdersTab({
@@ -267,6 +322,7 @@ export default function ManageOrdersTab({
   const [updateDeliveryBoyId, setUpdateDeliveryBoyId] = useState("");
   const [updateTable, setUpdateTable] = useState("");
   const [updateOrderNote, setUpdateOrderNote] = useState("");
+  const [updateMatchedCustomer, setUpdateMatchedCustomer] = useState(null);
   const [updateDiscount, setUpdateDiscount] = useState(0);
   const [updateDeliveryCharge, setUpdateDeliveryCharge] = useState(0);
   const [updateItems, setUpdateItems] = useState([]);
@@ -542,6 +598,21 @@ export default function ManageOrdersTab({
     };
   }, [filteredExternalOrders]);
 
+  const updateSubtotal = updateItems.reduce(
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    0
+  );
+  const updateDeliveryChargeAmount = Number(updateDeliveryCharge || 0);
+  const updateHistoryCount = Number(updateMatchedCustomer?.order_count || 0);
+  const updatePreDiscountBillAmount = updateSubtotal + updateDeliveryChargeAmount;
+  const updateEligibleDiscountPercent = updateHistoryCount >= 3
+    ? getLoyaltyDiscountPercent(updatePreDiscountBillAmount)
+    : 0;
+  const updateEligibleDiscountAmount = updateHistoryCount >= 3
+    ? calculateLoyaltyDiscountAmount(updatePreDiscountBillAmount)
+    : 0;
+  const canApplyUpdateDiscount = updateEligibleDiscountAmount > 0;
+
   function clearUpdateError(field) {
     setUpdateErrors((prev) => {
       if (!prev[field]) {
@@ -580,6 +651,8 @@ export default function ManageOrdersTab({
   }
 
   function handleUpdateCustomerSelect(customer) {
+    setUpdateMatchedCustomer(customer);
+
     if (!updateName.trim() && customer?.name) {
       setUpdateName(customer.name);
     }
@@ -592,12 +665,53 @@ export default function ManageOrdersTab({
       if (!updateAreaId && customer?.area_id) {
         setUpdateAreaId(String(customer.area_id));
         setUpdateAreaName(customer.area_name || "");
+        setUpdateDeliveryCharge(Number(customer.area_delivery_charge || 0));
       }
     }
 
     clearUpdateError("customer_phone");
     setUpdateFormError("");
   }
+
+  function handleUpdateDiscountInput(nextValue) {
+    const parsedValue = Number(nextValue || 0);
+
+    if (!parsedValue) {
+      setUpdateDiscount("");
+      clearUpdateError("discount");
+      setUpdateFormError("");
+      return;
+    }
+
+    if (!canApplyUpdateDiscount) {
+      setUpdateDiscount("");
+      clearUpdateError("discount");
+      setUpdateFormError("Discount not allowed for this order");
+      return;
+    }
+
+    setUpdateDiscount(Number(updateEligibleDiscountAmount.toFixed(2)));
+    clearUpdateError("discount");
+    setUpdateFormError("");
+  }
+
+  useEffect(() => {
+    const parsedDiscount = Number(updateDiscount || 0);
+
+    if (parsedDiscount <= 0) {
+      return;
+    }
+
+    if (!canApplyUpdateDiscount) {
+      setUpdateDiscount("");
+      return;
+    }
+
+    const normalizedDiscount = Number(updateEligibleDiscountAmount.toFixed(2));
+    if (Math.abs(parsedDiscount - normalizedDiscount) > 0.009) {
+      setUpdateDiscount(normalizedDiscount);
+    }
+  }, [canApplyUpdateDiscount, updateDiscount, updateEligibleDiscountAmount]);
 
   function validateUpdatedOrder() {
     const errors = {};
@@ -622,13 +736,6 @@ export default function ManageOrdersTab({
 
     if (Number.isNaN(Number(updateDiscount)) || Number(updateDiscount) < 0) {
       errors.discount = "Enter a valid discount";
-    }
-
-    if (
-      updateOrderType === "DELIVERY" &&
-      (Number.isNaN(Number(updateDeliveryCharge)) || Number(updateDeliveryCharge) < 0)
-    ) {
-      errors.delivery_charge = "Enter a valid delivery charge";
     }
 
     return errors;
@@ -818,7 +925,6 @@ export default function ManageOrdersTab({
   }
 
   function viewOrder(id) {
-
     fetch(buildApiUrl(`orders/${id}/`))
       .then(res => res.json())
       .then(data => {
@@ -837,6 +943,15 @@ export default function ManageOrdersTab({
       .then(data => {
 
         setSelectedOrder(data);
+        setUpdateMatchedCustomer(
+          data.customer_phone
+            ? {
+                phone: data.customer_phone,
+                order_count: data.customer_order_count || 0,
+                area_delivery_charge: data.delivery_charge || 0,
+              }
+            : null
+        );
 
         setUpdateOrderType(data.order_type);
         setUpdateName(data.customer_name || "");
@@ -975,6 +1090,10 @@ export default function ManageOrdersTab({
       setShowUpdateModal(false);
       setUpdateErrors({});
       setUpdateFormError("");
+      setUpdateMatchedCustomer(null);
+      if (data.order) {
+        setSelectedOrder(data.order);
+      }
 
       fetchOrders()
 
@@ -1915,9 +2034,11 @@ icon={(
 <DetailField label="Payment Mode" value={selectedOrder.payment_mode || "-"} />
 <DetailField label="Order Status" value={selectedOrder.order_status} />
 <DetailField label="Payment Status" value={selectedOrder.payment_status} />
+<DetailField label="Updated" value={selectedOrder.was_updated ? "Yes" : "No"} />
 <DetailField label="Submission Source" value={selectedOrder.submission_source_display || selectedOrder.submission_source || "-"} />
 <DetailField label="Acceptance" value={selectedOrder.acceptance_status_display || selectedOrder.acceptance_status || "-"} />
 <DetailField label="Created At" value={formatFullDateTime(selectedOrder.created_at)} />
+<DetailField label="Last Updated" value={formatFullDateTime(selectedOrder.updated_at)} />
 <DetailField label="Scheduled For" value={formatFullDateTime(selectedOrder.scheduled_time)} />
 {selectedOrder.order_status === "CANCELLED" && (
 <>
@@ -1988,10 +2109,19 @@ icon={(
 )}
 >
 <div className="space-y-3">
-<div className="grid gap-3 sm:grid-cols-3">
+<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
 <DetailField label="Subtotal" value={`₹${formatMoney(selectedOrder.subtotal)}`} />
 <DetailField label="Discount" value={`₹${formatMoney(selectedOrder.discount)}`} />
-<DetailField label="Delivery Charge" value={`₹${formatMoney(selectedOrder.delivery_charge)}`} />
+<DetailField
+label="Delivery Charge"
+value={
+  selectedOrder.order_type === "DELIVERY" && Number(selectedOrder.delivery_charge || 0) === 0
+    ? "FREE"
+    : `₹${formatMoney(selectedOrder.delivery_charge)}`
+}
+/>
+<DetailField label="Paid Amount" value={`₹${formatMoney(selectedOrder.amount_paid)}`} />
+<DetailField label="Remaining Amount" value={`₹${formatMoney(selectedOrder.remaining_amount)}`} />
 </div>
 <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-4">
 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-200/80">
@@ -2166,6 +2296,7 @@ clearUpdateError("customer_phone")
 setUpdateFormError("")
 }}
 onSelectCustomer={handleUpdateCustomerSelect}
+onExactMatchChange={setUpdateMatchedCustomer}
 label="Phone"
 error={updateErrors.customer_phone}
 helperText={
@@ -2232,12 +2363,14 @@ selectedAreaName={updateAreaName}
 onSelectArea={(area)=>{
 setUpdateAreaId(String(area.id))
 setUpdateAreaName(area.name)
+setUpdateDeliveryCharge(Number(area.delivery_charge || 0))
 clearUpdateError("area_id")
 setUpdateFormError("")
 }}
 onClearArea={()=>{
 setUpdateAreaId("")
 setUpdateAreaName("")
+setUpdateDeliveryCharge(0)
 clearUpdateError("area_id")
 setUpdateFormError("")
 }}
@@ -2261,19 +2394,9 @@ className={`${inputStyle} resize-none`}
 
 <div>
 <label className="block mb-1">Delivery Charge</label>
-<input
-type="number"
-value={updateDeliveryCharge}
-onChange={(e)=>{
-setUpdateDeliveryCharge(e.target.value)
-clearUpdateError("delivery_charge")
-setUpdateFormError("")
-}}
-className={inputStyle}
-/>
-{updateErrors.delivery_charge && (
-<div className="mt-1 text-xs text-red-400">{updateErrors.delivery_charge}</div>
-)}
+<div className={`${inputStyle} font-semibold text-emerald-200`}>
+{formatDeliveryChargeLabel(updateOrderType, updateDeliveryCharge)}
+</div>
 </div>
 </>
 
@@ -2285,15 +2408,22 @@ className={inputStyle}
 type="number"
 value={updateDiscount}
 onChange={(e)=>{
-setUpdateDiscount(e.target.value)
-clearUpdateError("discount")
-setUpdateFormError("")
+handleUpdateDiscountInput(e.target.value)
 }}
 className={inputStyle}
 />
 {updateErrors.discount && (
 <div className="mt-1 text-xs text-red-400">{updateErrors.discount}</div>
 )}
+<div className="mt-1 text-xs text-slate-400">
+{!updatePhone.trim()
+  ? "Enter customer phone to check discount eligibility."
+  : updateHistoryCount < 3
+    ? `Discount unlocks after 3 linked orders. Current history: ${updateHistoryCount}.`
+    : !canApplyUpdateDiscount
+      ? "This customer is eligible, but the bill must reach Rs 500 for a loyalty discount."
+      : `Eligible loyalty discount: ${updateEligibleDiscountPercent}% = Rs ${formatMoney(updateEligibleDiscountAmount)}. Enter any positive value to apply it automatically.`}
+</div>
 </div>
 
 <div>

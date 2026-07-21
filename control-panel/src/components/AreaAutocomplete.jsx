@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import api from "../services/api";
+import { formatDeliveryChargeLabel } from "../utils/orderPricing";
 
 
 export default function AreaAutocomplete({
@@ -155,12 +156,19 @@ export default function AreaAutocomplete({
                       : "border border-slate-800 bg-slate-900/80 text-slate-200 hover:border-slate-600"
                   }`}
                 >
-                  <span className="font-medium">{area.name}</span>
-                  {active ? (
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300">
-                      Selected
-                    </span>
-                  ) : null}
+                  <div>
+                    <div className="font-medium">{area.name}</div>
+                    <div className="mt-1 text-xs text-slate-400">
+                      Delivery: {formatDeliveryChargeLabel("DELIVERY", area.delivery_charge)}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    {active ? (
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300">
+                        Selected
+                      </span>
+                    ) : null}
+                  </div>
                 </button>
               );
             })}

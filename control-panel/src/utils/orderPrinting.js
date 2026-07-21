@@ -1,5 +1,6 @@
 import { buildApiUrl } from "../services/api";
 import { receiptBranding } from "../config/receiptBranding";
+import { formatDeliveryChargeLabel } from "./orderPricing";
 
 function formatOrderCreatedAt(value) {
   return new Date(value)
@@ -136,6 +137,7 @@ export async function printOrderBill(orderId) {
       <div class="center location">${receiptBranding.location}</div>
       <div class="center location">Phone: ${receiptBranding.phone}</div>
       <div class="center location">${createdAt}</div>
+      ${order.was_updated ? `<div class="center bold">UPDATED</div>` : ""}
 
       ${order.order_note ? `
         <div class="line"></div>
@@ -177,14 +179,20 @@ export async function printOrderBill(orderId) {
         <span>₹${order.subtotal}</span>
       </div>
 
-      <div class="row">
-        <span>Discount</span>
-        <span>₹${order.discount}</span>
-      </div>
+      ${Number(order.discount || 0) > 0 ? `
+        <div class="row">
+          <span>Discount</span>
+          <span>₹${order.discount}</span>
+        </div>
+      ` : ""}
 
       <div class="row">
         <span>Delivery</span>
-        <span>₹${order.delivery_charge}</span>
+        <span>${
+          order.order_type === "DELIVERY" && Number(order.delivery_charge || 0) === 0
+            ? "FREE"
+            : `₹${formatDeliveryChargeLabel(order.order_type, order.delivery_charge)}`
+        }</span>
       </div>
 
       <div class="line"></div>

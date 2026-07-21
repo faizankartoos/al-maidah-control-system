@@ -16,6 +16,11 @@ from .views import (
     ExternalOrderDecisionAPIView,
     AreaListAPIView,
     CustomerLookupAPIView,
+    DeliveryAreaSettingsListCreateAPIView,
+    DeliveryAreaSettingsDetailAPIView,
+    DeliveryBoySettingsListCreateAPIView,
+    DeliveryBoySettingsDetailAPIView,
+    BulkCollectOrdersSettingsAPIView,
 )
 
 urlpatterns = [
@@ -36,6 +41,11 @@ urlpatterns = [
     path("orders/<int:order_id>/start/",StartScheduledOrderAPIView.as_view()),
     path("orders/areas/", AreaListAPIView.as_view()),
     path("orders/customers/", CustomerLookupAPIView.as_view()),
+    path("settings/delivery-areas/", DeliveryAreaSettingsListCreateAPIView.as_view()),
+    path("settings/delivery-areas/<int:area_id>/", DeliveryAreaSettingsDetailAPIView.as_view()),
+    path("settings/delivery-boys/", DeliveryBoySettingsListCreateAPIView.as_view()),
+    path("settings/delivery-boys/<int:account_id>/", DeliveryBoySettingsDetailAPIView.as_view()),
+    path("settings/collect-orders/", BulkCollectOrdersSettingsAPIView.as_view()),
     
 
 ]

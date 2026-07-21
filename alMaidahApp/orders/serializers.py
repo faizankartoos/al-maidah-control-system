@@ -1,4 +1,7 @@
+from django.db.models import Sum
 from rest_framework import serializers
+
+from .services import get_customer_order_count
 from .models import Area, Order, OrderItem, OrderPayment
 
 
@@ -17,7 +20,7 @@ class OrderPaymentSerializer(serializers.ModelSerializer):
 class AreaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Area
-        fields = ["id", "name"]
+        fields = ["id", "name", "delivery_charge"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -34,6 +37,10 @@ class OrderSerializer(serializers.ModelSerializer):
     submitted_by_name = serializers.SerializerMethodField()
     submitted_by_username = serializers.SerializerMethodField()
     acceptance_decided_by_name = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
+    was_updated = serializers.SerializerMethodField()
+    customer_order_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -62,7 +69,13 @@ class OrderSerializer(serializers.ModelSerializer):
             "discount",
             "delivery_charge",
             "total_amount",
+            "amount_paid",
+            "remaining_amount",
+            "update_count",
+            "was_updated",
+            "customer_order_count",
             "created_at",
+            "updated_at",
             "completed_at",
             "cancelled_at",
             "submitted_by",
@@ -124,3 +137,19 @@ class OrderSerializer(serializers.ModelSerializer):
 
         full_name = obj.acceptance_decided_by.get_full_name().strip()
         return full_name or obj.acceptance_decided_by.username
+
+    def get_amount_paid(self, obj):
+        return obj.payments.aggregate(total=Sum("amount"))["total"] or 0
+
+    def get_remaining_amount(self, obj):
+        amount_paid = self.get_amount_paid(obj)
+        remaining = obj.total_amount - amount_paid
+        if remaining < 0:
+            return 0
+        return remaining
+
+    def get_was_updated(self, obj):
+        return bool(obj.update_count)
+
+    def get_customer_order_count(self, obj):
+        return get_customer_order_count(obj.customer_phone, exclude_order_id=obj.id)

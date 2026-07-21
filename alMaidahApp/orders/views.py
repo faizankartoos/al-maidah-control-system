@@ -1,14 +1,22 @@
+import re
+
 from ledger.services import record_credit, record_debit
+from ledger.serializers import AccountSerializer, AccountWriteSerializer
 from ledger.utils import get_cash_drawer
 
 from .services import (
     apply_customer_advance_to_order,
     cancel_order,
+    compute_subtotal_from_items,
     ChangeConfirmationRequired,
     collect_payment,
     complete_unpaid_order,
     get_customer_context_by_phone,
+    get_order_amount_paid,
+    get_order_remaining_amount,
     process_payment,
+    resolve_delivery_charge,
+    resolve_loyalty_discount,
     sync_external_order_acceptance,
     update_order_details,
 )
@@ -74,12 +82,25 @@ def _submitted_by_name(user):
     return full_name or user.username
 
 
-def _serialize_external_order(order):
-    amount_paid = order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
-    remaining_amount = order.total_amount - amount_paid
+def _extract_serializer_error(errors, fallback):
+    if isinstance(errors, str):
+        return errors
 
-    if remaining_amount < 0:
-        remaining_amount = Decimal("0.00")
+    if isinstance(errors, list) and errors:
+        return _extract_serializer_error(errors[0], fallback)
+
+    if isinstance(errors, dict):
+        for value in errors.values():
+            message = _extract_serializer_error(value, fallback)
+            if message:
+                return message
+
+    return fallback
+
+
+def _serialize_external_order(order):
+    amount_paid = get_order_amount_paid(order)
+    remaining_amount = get_order_remaining_amount(order)
 
     return {
         "id": order.id,
@@ -101,8 +122,12 @@ def _serialize_external_order(order):
         "scheduled_time": order.scheduled_time,
         "guest_count": order.guest_count,
         "total_amount": order.total_amount,
+        "amount_paid": amount_paid,
         "remaining_amount": remaining_amount,
+        "update_count": order.update_count,
+        "was_updated": bool(order.update_count),
         "created_at": order.created_at,
+        "updated_at": order.updated_at,
         "submitted_by": order.submitted_by_id,
         "submitted_by_name": _submitted_by_name(order.submitted_by),
         "submitted_by_username": order.submitted_by.username if order.submitted_by else None,
@@ -154,6 +179,261 @@ class AreaListAPIView(APIView):
 
         serializer = AreaSerializer(areas[:20], many=True)
         return Response(serializer.data)
+
+
+class DeliveryAreaSettingsListCreateAPIView(APIView):
+    required_tabs = ("SETTINGS",)
+
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        areas = Area.objects.all().order_by("name")
+
+        if query:
+            normalized_query = normalize_area_name(query)
+            areas = areas.filter(
+                Q(name__icontains=query) |
+                Q(normalized_name__icontains=normalized_query)
+            )
+
+        return Response(AreaSerializer(areas, many=True).data)
+
+    def post(self, request):
+        name = re.sub(r"\s+", " ", (request.data.get("name") or "").strip())
+
+        if not name:
+            return Response({"error": "Area name is required."}, status=400)
+
+        try:
+            delivery_charge = Decimal(str(request.data.get("delivery_charge", 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({"error": "Enter a valid delivery charge."}, status=400)
+
+        if delivery_charge < 0:
+            return Response({"error": "Delivery charge cannot be negative."}, status=400)
+
+        if Area.objects.filter(normalized_name=normalize_area_name(name)).exists():
+            return Response({"error": "This area already exists."}, status=400)
+
+        area = Area.objects.create(name=name, delivery_charge=delivery_charge)
+        return Response(AreaSerializer(area).data, status=status.HTTP_201_CREATED)
+
+
+class DeliveryAreaSettingsDetailAPIView(APIView):
+    required_tabs = ("SETTINGS",)
+
+    def patch(self, request, area_id):
+        try:
+            area = Area.objects.get(id=area_id)
+        except Area.DoesNotExist:
+            return Response({"error": "Area not found."}, status=404)
+
+        if "name" in request.data:
+            cleaned_name = re.sub(r"\s+", " ", str(request.data.get("name") or "").strip())
+
+            if not cleaned_name:
+                return Response({"error": "Area name is required."}, status=400)
+
+            normalized_name = normalize_area_name(cleaned_name)
+            if Area.objects.exclude(id=area.id).filter(normalized_name=normalized_name).exists():
+                return Response({"error": "This area already exists."}, status=400)
+
+            area.name = cleaned_name
+
+        if "delivery_charge" in request.data:
+            try:
+                delivery_charge = Decimal(str(request.data.get("delivery_charge", 0)))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({"error": "Enter a valid delivery charge."}, status=400)
+
+            if delivery_charge < 0:
+                return Response({"error": "Delivery charge cannot be negative."}, status=400)
+
+            area.delivery_charge = delivery_charge
+
+        area.save()
+        return Response(AreaSerializer(area).data)
+
+
+class DeliveryBoySettingsListCreateAPIView(APIView):
+    required_tabs = ("SETTINGS",)
+
+    def get(self, request):
+        queryset = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("-is_active", "name", "id")
+        return Response(AccountSerializer(queryset, many=True).data)
+
+    def post(self, request):
+        payload = {
+            "name": request.data.get("name"),
+            "account_type": "DELIVERY",
+            "contact_number": request.data.get("contact_number"),
+            "address": request.data.get("address"),
+            "opening_balance": request.data.get("opening_balance", 0),
+            "is_active": request.data.get("is_active", True),
+        }
+        serializer = AccountWriteSerializer(data=payload)
+
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": _extract_serializer_error(serializer.errors, "Failed to save delivery boy."),
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        account = serializer.save()
+        return Response(AccountSerializer(account).data, status=status.HTTP_201_CREATED)
+
+
+class DeliveryBoySettingsDetailAPIView(APIView):
+    required_tabs = ("SETTINGS",)
+
+    def patch(self, request, account_id):
+        try:
+            account = LedgerAccount.objects.get(id=account_id, account_type="DELIVERY")
+        except LedgerAccount.DoesNotExist:
+            return Response({"error": "Delivery boy not found."}, status=404)
+
+        payload = {
+            "name": request.data.get("name", account.name),
+            "account_type": "DELIVERY",
+            "contact_number": request.data.get("contact_number", account.contact_number),
+            "address": request.data.get("address", account.address),
+            "opening_balance": request.data.get("opening_balance", account.opening_balance),
+            "is_active": request.data.get("is_active", account.is_active),
+        }
+        serializer = AccountWriteSerializer(account, data=payload, partial=True)
+
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "error": _extract_serializer_error(serializer.errors, "Failed to update delivery boy."),
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updated_account = serializer.save()
+        return Response(AccountSerializer(updated_account).data)
+
+    def delete(self, request, account_id):
+        try:
+            account = LedgerAccount.objects.get(id=account_id, account_type="DELIVERY")
+        except LedgerAccount.DoesNotExist:
+            return Response({"error": "Delivery boy not found."}, status=404)
+
+        if account.delivery_orders.exists() or account.entries.exists():
+            if account.is_active:
+                account.is_active = False
+                account.save(update_fields=["is_active"])
+
+            return Response(
+                {
+                    "success": True,
+                    "action": "archived",
+                    "message": "Delivery boy archived because linked orders or transactions exist.",
+                }
+            )
+
+        account.delete()
+        return Response({"success": True, "action": "deleted", "message": "Delivery boy removed."})
+
+
+class BulkCollectOrdersSettingsAPIView(APIView):
+    required_tabs = ("SETTINGS",)
+    required_permissions = ("COLLECT_PAYMENTS",)
+
+    def post(self, request):
+        from_date = parse_date(request.data.get("from_date") or "")
+        to_date = parse_date(request.data.get("to_date") or "")
+        payment_type = (request.data.get("payment_type") or "").strip().upper()
+
+        if not from_date or not to_date:
+            return Response({"error": "Select a valid from and to date."}, status=400)
+
+        if to_date < from_date:
+            return Response({"error": "To date cannot be earlier than from date."}, status=400)
+
+        if payment_type not in {"CASH", "ONLINE"}:
+            return Response({"error": "Select a valid payment mode."}, status=400)
+
+        orders = (
+            Order.objects
+            .select_related("delivery_boy", "customer_account")
+            .prefetch_related("payments")
+            .filter(
+                acceptance_status__in=ACTIVE_ACCEPTANCE_STATUSES,
+                created_at__date__gte=from_date,
+                created_at__date__lte=to_date,
+            )
+            .exclude(order_status="CANCELLED")
+            .exclude(payment_status="PAID")
+            .order_by("created_at", "id")
+        )
+
+        collected_orders = []
+        skipped_orders = []
+        failed_orders = []
+        total_collected_amount = Decimal("0.00")
+
+        for order in orders:
+            if order.order_status == "COMPLETED" and order.customer_account_id:
+                skipped_orders.append(
+                    {
+                        "id": order.id,
+                        "reason": "Completed unpaid orders assigned to ledger must be collected from Ledger.",
+                    }
+                )
+                continue
+
+            remaining_amount = get_order_remaining_amount(order)
+            if remaining_amount <= 0:
+                skipped_orders.append(
+                    {
+                        "id": order.id,
+                        "reason": "No remaining balance to collect.",
+                    }
+                )
+                continue
+
+            try:
+                with transaction.atomic():
+                    collect_payment(order, remaining_amount, payment_type)
+            except ValueError as exc:
+                failed_orders.append(
+                    {
+                        "id": order.id,
+                        "reason": str(exc),
+                    }
+                )
+                continue
+
+            collected_orders.append(
+                {
+                    "id": order.id,
+                    "amount": remaining_amount,
+                }
+            )
+            total_collected_amount += remaining_amount
+
+        return Response(
+            {
+                "success": True,
+                "summary": {
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "payment_type": payment_type,
+                    "eligible_orders": orders.count(),
+                    "collected_count": len(collected_orders),
+                    "skipped_count": len(skipped_orders),
+                    "failed_count": len(failed_orders),
+                    "total_collected_amount": total_collected_amount,
+                },
+                "collected_orders": collected_orders,
+                "skipped_orders": skipped_orders,
+                "failed_orders": failed_orders,
+            }
+        )
 
 
 class CustomerLookupAPIView(APIView):
@@ -303,8 +583,7 @@ class CreateOrderAPIView(APIView):
         try:
             items = self._validate_items(data.get("items", []))
 
-            discount = self._parse_money(data.get("discount"))
-            delivery_charge = self._parse_money(data.get("delivery_charge"))
+            requested_discount = self._parse_money(data.get("discount"))
             payment_amount = Decimal("0.00")
             cash_amount = Decimal("0.00")
             online_amount = Decimal("0.00")
@@ -388,8 +667,21 @@ class CreateOrderAPIView(APIView):
                 )
             except LedgerAccount.DoesNotExist:
                 return Response({"error": "Invalid delivery boy"}, status=400)
-        else:
-            delivery_charge = Decimal("0.00")
+
+        delivery_charge = resolve_delivery_charge(order_type, area)
+        subtotal_preview = compute_subtotal_from_items(items)
+        base_total = subtotal_preview + delivery_charge
+
+        try:
+            discount_result = resolve_loyalty_discount(
+                requested_discount=requested_discount,
+                customer_phone=phone,
+                base_total=base_total,
+            )
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+
+        discount = discount_result["discount"]
 
         # Normalize fields
         if order_type == "DINE_IN":
@@ -539,6 +831,7 @@ class CreateOrderAPIView(APIView):
                 "success": True,
                 "order_id": order.id,
                 "total": order.total_amount,
+                "discount_applied": discount,
                 "advance_applied": advance_applied,
                 "acceptance_status": order.acceptance_status,
                 "submission_source": order.submission_source,
@@ -888,7 +1181,7 @@ class UpdateOrderAPIView(APIView):
 
         return normalized_items
 
-    def _validate_payload(self, data):
+    def _validate_payload(self, data, *, order_id=None):
 
         errors = {}
 
@@ -905,12 +1198,7 @@ class UpdateOrderAPIView(APIView):
         order_note = (data.get("order_note") or "").strip() or None
         table_number = (data.get("table_number") or "").strip() or None
 
-        discount = self._parse_money(data.get("discount", 0), "discount", errors)
-        delivery_charge = self._parse_money(
-            data.get("delivery_charge", 0),
-            "delivery_charge",
-            errors
-        )
+        requested_discount = self._parse_money(data.get("discount", 0), "discount", errors)
 
         items = self._validate_items(data.get("items", []), errors)
 
@@ -942,12 +1230,31 @@ class UpdateOrderAPIView(APIView):
                 except Area.DoesNotExist:
                     errors["area_id"] = "Select a valid area"
         else:
-            delivery_charge = Decimal("0.00")
             delivery_boy = None
             area = None
 
+        delivery_charge = resolve_delivery_charge(order_type, area)
+
         if order_type != "DINE_IN":
             table_number = None
+
+        if not errors:
+            subtotal_preview = compute_subtotal_from_items(items)
+            base_total = subtotal_preview + delivery_charge
+
+            try:
+                discount_result = resolve_loyalty_discount(
+                    requested_discount=requested_discount,
+                    customer_phone=customer_phone,
+                    base_total=base_total,
+                    exclude_order_id=order_id,
+                )
+                discount = discount_result["discount"]
+            except ValueError as exc:
+                errors["discount"] = str(exc)
+                discount = Decimal("0.00")
+        else:
+            discount = Decimal("0.00")
 
         return errors, {
             "order_type": order_type,
@@ -982,7 +1289,7 @@ class UpdateOrderAPIView(APIView):
 
         data = request.data
 
-        errors, validated_data = self._validate_payload(data)
+        errors, validated_data = self._validate_payload(data, order_id=order.id)
 
         if errors:
             return Response({"errors": errors}, status=400)
@@ -993,7 +1300,8 @@ class UpdateOrderAPIView(APIView):
             {
                 "success": True,
                 "order_id": order.id,
-                "total": order.total_amount
+                "total": order.total_amount,
+                "order": OrderSerializer(order).data,
             },
             status=status.HTTP_200_OK
         )
@@ -1348,13 +1656,17 @@ class OrdersFilterAPIView(APIView):
                 "submission_source": o.submission_source,
                 "acceptance_status": o.acceptance_status,
                 "total_amount": o.total_amount,
+                "amount_paid": Decimal(str(o.amount_paid or "0.00")),
                 "remaining_amount": remaining_amount,
+                "update_count": o.update_count,
+                "was_updated": bool(o.update_count),
                 "customer_name": o.customer_name,
                 "customer_phone": o.customer_phone,
                 "delivery_address": o.delivery_address,
                 "area": o.area_id,
                 "area_name": o.area.name if o.area else None,
                 "created_at": o.created_at,
+                "updated_at": o.updated_at,
                 "scheduled_time": o.scheduled_time,
                 "submitted_by_name": _submitted_by_name(o.submitted_by),
                 "submitted_by_username": o.submitted_by.username if o.submitted_by else None,
