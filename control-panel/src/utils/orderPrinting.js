@@ -219,6 +219,7 @@ export async function printOrderBill(orderId) {
         </svg>
         <span>Follow us on Instagram: ${receiptBranding.instagramHandle}</span>
       </div>
+      <div class="footer-note">********************</div>
       <div style="margin-top:10px;">
         <br/>
       </div>
