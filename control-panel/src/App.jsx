@@ -4,6 +4,7 @@ import LoginScreen from "./components/LoginScreen";
 import CustomerDisplay from "./pages/CustomerDisplay";
 import api, { buildApiUrl, clearAuthToken, getAuthToken } from "./services/api";
 import { TAB_DEFINITIONS } from "./constants/tabConfig";
+import { getThemeConfig, isLightThemePreference } from "./constants/themeOptions";
 import { InlineLoaderLabel, ScreenLoader } from "./components/SystemLoader";
 
 
@@ -140,25 +141,30 @@ function ExternalOrderPrompt({ order, onAccept, onDecline, onDismiss, busy }) {
 
 
 function AppearanceControls({ user, onPreferenceChange, preferenceSaving, onLogout }) {
-  const isDayTheme = user?.theme_preference === "DAY";
+  const themeConfig = getThemeConfig(user?.theme_preference);
+  const isDayTheme = themeConfig.family === "light";
+  const nextQuickTheme = isDayTheme ? "NIGHT" : "DAY";
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-3">
       <div className="rounded-[24px] border border-slate-700/70 bg-slate-950/50 px-4 py-3 backdrop-blur-sm">
         <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-400">
-          Theme
+          Quick Mode
+        </div>
+        <div className={`mt-1 text-xs ${isDayTheme ? "text-slate-600" : "text-slate-400"}`}>
+          {themeConfig.label}
         </div>
         <button
           type="button"
           onClick={() =>
             onPreferenceChange({
-              theme_preference: isDayTheme ? "NIGHT" : "DAY",
+              theme_preference: nextQuickTheme,
             })
           }
           className="mt-2 flex items-center gap-3"
         >
           <span className={`text-xs font-semibold ${isDayTheme ? "text-slate-500" : "text-white"}`}>
-            Night
+            Dark
           </span>
           <span className={`relative flex h-9 w-20 items-center rounded-full border transition ${
             isDayTheme
@@ -174,7 +180,7 @@ function AppearanceControls({ user, onPreferenceChange, preferenceSaving, onLogo
             />
           </span>
           <span className={`text-xs font-semibold ${isDayTheme ? "text-slate-950" : "text-slate-300"}`}>
-            Day
+            Light
           </span>
         </button>
       </div>
@@ -226,7 +232,8 @@ function AppearanceControls({ user, onPreferenceChange, preferenceSaving, onLogo
 
 
 function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSaving }) {
-  const isDayTheme = user?.theme_preference === "DAY";
+  const themeConfig = getThemeConfig(user?.theme_preference);
+  const isDayTheme = themeConfig.family === "light";
   const availableTabs = useMemo(() => {
     const allowed = new Set(user?.allowed_tabs || []);
     return TAB_DEFINITIONS.filter((tab) => allowed.has(tab.key));
@@ -362,11 +369,7 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
 
   return (
     <div
-      className={`system-shell min-h-screen transition-colors duration-300 ${
-        isDayTheme
-          ? "system-theme-day bg-[radial-gradient(circle_at_top_left,_rgba(14,116,144,0.12),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(245,158,11,0.12),_transparent_26%),linear-gradient(135deg,_#eff6ff_0%,_#f8fafc_48%,_#e2e8f0_100%)] text-slate-950"
-          : "system-theme-night bg-slate-950 text-white"
-      }`}
+      className={`system-shell min-h-screen transition-colors duration-300 ${themeConfig.rootClass}`}
     >
       <ExternalOrderPrompt
         order={activeNotification}
@@ -378,15 +381,11 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
 
       <div className="mx-auto max-w-[95vw] p-6">
         <div
-          className={`overflow-hidden rounded-[32px] px-6 py-6 shadow-[0_35px_90px_rgba(15,23,42,0.18)] ${
-            isDayTheme
-              ? "border border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(14,116,144,0.12),_transparent_24%),radial-gradient(circle_at_top_right,_rgba(245,158,11,0.14),_transparent_22%),linear-gradient(135deg,_#ffffff_0%,_#eff6ff_48%,_#e2e8f0_100%)]"
-              : "border border-slate-800 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.18),_transparent_24%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.12),_transparent_22%),linear-gradient(135deg,_#020617_0%,_#0f172a_48%,_#111827_100%)]"
-          }`}
+          className={`overflow-hidden rounded-[32px] px-6 py-6 shadow-[0_35px_90px_rgba(15,23,42,0.18)] ${themeConfig.heroClass}`}
         >
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <div className={`text-[11px] uppercase tracking-[0.34em] ${isDayTheme ? "text-sky-700" : "text-emerald-300"}`}>
+              <div className={`text-[11px] uppercase tracking-[0.34em] ${themeConfig.eyebrowClass}`}>
                 Al-Maidah Control System
               </div>
               <h1 className="mt-3 text-3xl font-semibold tracking-tight">
@@ -445,7 +444,12 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
             : "border border-slate-800 bg-slate-900/90"
         }`}>
           {ActiveComponent ? (
-            <ActiveComponent currentUser={user} externalRefreshKey={externalRefreshKey} />
+            <ActiveComponent
+              currentUser={user}
+              externalRefreshKey={externalRefreshKey}
+              onPreferenceChange={onPreferenceChange}
+              preferenceSaving={preferenceSaving}
+            />
           ) : (
             <div className={`rounded-[22px] border border-dashed px-5 py-12 text-center text-sm ${
               isDayTheme
@@ -470,15 +474,24 @@ export default function App() {
   const [preferenceSaving, setPreferenceSaving] = useState(false);
 
   useEffect(() => {
-    const theme = user?.theme_preference || "NIGHT";
+    const themeConfig = getThemeConfig(user?.theme_preference);
+    const theme = themeConfig.value;
     const font = user?.font_preference || "MEDIUM";
     const root = document.documentElement;
     const body = document.body;
 
     root.style.fontSize = ROOT_FONT_SIZES[font] || ROOT_FONT_SIZES.MEDIUM;
-    body.classList.remove("system-theme-day", "system-theme-night");
-    body.classList.add(`system-theme-${theme.toLowerCase()}`);
-    body.style.backgroundColor = theme === "DAY" ? "#eff6ff" : "#020617";
+    body.classList.remove(
+      "system-theme-day",
+      "system-theme-night",
+      "system-theme-scheme-night",
+      "system-theme-scheme-day",
+      "system-theme-scheme-stone",
+      "system-theme-scheme-charcoal"
+    );
+    body.classList.add(isLightThemePreference(theme) ? "system-theme-day" : "system-theme-night");
+    body.classList.add(`system-theme-scheme-${theme.toLowerCase()}`);
+    body.style.backgroundColor = themeConfig.bodyColor;
   }, [user?.theme_preference, user?.font_preference]);
 
   useEffect(() => {

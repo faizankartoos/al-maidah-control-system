@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
+import { getThemeConfig, THEME_OPTIONS } from "../constants/themeOptions";
 import { InlineButtonContent, PanelLoader } from "./SystemLoader";
 import { formatDeliveryChargeLabel } from "../utils/orderPricing";
 
@@ -23,7 +24,7 @@ function emptyDeliveryBoyForm() {
   };
 }
 
-export default function SettingsTab() {
+export default function SettingsTab({ currentUser, onPreferenceChange, preferenceSaving = false }) {
   const [loading, setLoading] = useState(true);
   const [areas, setAreas] = useState([]);
   const [areaDrafts, setAreaDrafts] = useState({});
@@ -118,6 +119,7 @@ export default function SettingsTab() {
     () => deliveryBoys.filter((boy) => boy.is_active).length,
     [deliveryBoys]
   );
+  const activeTheme = getThemeConfig(currentUser?.theme_preference);
 
   async function createArea() {
     try {
@@ -279,6 +281,86 @@ export default function SettingsTab() {
         </p>
 
         <SettingsFeedback error={error} success={success} />
+      </div>
+
+      <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-6">
+        <div className="text-xs font-semibold uppercase tracking-[0.3em] text-sky-300">
+          Appearance
+        </div>
+        <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h3 className="text-2xl font-semibold text-white">Color schemes</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-400">
+              Switch the full control panel vibe without hurting readability. Status colors stay meaningful across every scheme.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-300">
+            Active scheme: <span className="font-semibold text-white">{activeTheme.label}</span>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {THEME_OPTIONS.map((theme) => {
+            const isActive = activeTheme.value === theme.value;
+
+            return (
+              <button
+                key={theme.value}
+                type="button"
+                onClick={() => onPreferenceChange?.({ theme_preference: theme.value })}
+                disabled={preferenceSaving}
+                className={`text-left rounded-[28px] border p-4 transition ${
+                  isActive
+                    ? "border-amber-300/60 bg-amber-200/10 shadow-[0_0_0_1px_rgba(253,224,71,0.22),0_18px_45px_rgba(251,191,36,0.14)]"
+                    : "border-slate-800 bg-slate-900/60 hover:border-slate-600 hover:bg-slate-900/85"
+                } disabled:cursor-not-allowed disabled:opacity-70`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-semibold text-white">{theme.label}</div>
+                    <div className="mt-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                      {theme.quickLabel} Scheme
+                    </div>
+                  </div>
+                  <div className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] ${
+                    isActive
+                      ? "border border-amber-300/40 bg-amber-300/15 text-amber-100"
+                      : "border border-slate-700 bg-slate-950/70 text-slate-300"
+                  }`}>
+                    {isActive ? "Active" : "Select"}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-[22px] border border-white/10 p-3" style={{ backgroundColor: theme.preview.shell }}>
+                  <div className="grid gap-2">
+                    <div className="h-4 rounded-full" style={{ backgroundColor: theme.preview.accent, width: "42%" }} />
+                    <div className="rounded-2xl border p-3" style={{ backgroundColor: theme.preview.card, borderColor: theme.preview.border }}>
+                      <div className="flex gap-2">
+                        <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: theme.preview.accent }} />
+                        <div className="h-2.5 w-16 rounded-full bg-white/20" />
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        <div className="h-10 rounded-xl" style={{ backgroundColor: theme.preview.card, border: `1px solid ${theme.preview.border}` }} />
+                        <div className="h-10 rounded-xl" style={{ backgroundColor: theme.preview.card, border: `1px solid ${theme.preview.border}` }} />
+                        <div className="h-10 rounded-xl" style={{ backgroundColor: theme.preview.card, border: `1px solid ${theme.preview.border}` }} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="mt-4 text-sm leading-6 text-slate-400">
+                  {theme.description}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+
+        {preferenceSaving ? (
+          <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.26em] text-emerald-300">
+            Saving scheme...
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-5 xl:grid-cols-3">

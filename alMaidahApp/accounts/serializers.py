@@ -14,6 +14,12 @@ from .models import (
 
 VALID_TABS = {value for value, _label in TAB_PERMISSIONS}
 VALID_SPECIAL_ACCESS = set(SPECIAL_ACCESS_KEYS)
+THEME_PREFERENCE_CHOICES = (
+    ("NIGHT", "Midnight Ops"),
+    ("DAY", "Cafe Light"),
+    ("STONE", "Stone Ledger"),
+    ("CHARCOAL", "Charcoal Teal"),
+)
 
 
 def serialize_user_profile(user):
@@ -52,7 +58,7 @@ class UserProfileSerializer(serializers.Serializer):
 
 class PreferenceSerializer(serializers.Serializer):
     theme_preference = serializers.ChoiceField(
-        choices=UserProfile.THEME_CHOICES,
+        choices=THEME_PREFERENCE_CHOICES,
         required=False,
     )
     font_preference = serializers.ChoiceField(

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
+import { isLightThemePreference } from "../constants/themeOptions";
 import { PanelLoader } from "./SystemLoader";
 
 function emptyForm() {
@@ -42,7 +43,7 @@ function extractError(err, fallback) {
 }
 
 export default function MenuTab({ currentUser }) {
-  const isDayTheme = currentUser?.theme_preference === "DAY";
+  const isDayTheme = isLightThemePreference(currentUser?.theme_preference);
   const [menuItems, setMenuItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");

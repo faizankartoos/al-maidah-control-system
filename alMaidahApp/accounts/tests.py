@@ -122,3 +122,23 @@ class AccountsAuthTests(TestCase):
         self.assertEqual(profile.font_preference, "BIG")
         self.assertEqual(response.data["theme_preference"], "DAY")
         self.assertEqual(response.data["font_preference"], "BIG")
+
+    def test_user_can_switch_to_extended_theme_scheme(self):
+        token = Token.objects.create(user=self.staff)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        response = self.client.patch(
+            "/api/auth/me/",
+            {
+                "theme_preference": "STONE",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.staff.refresh_from_db()
+        profile = ensure_user_profile(self.staff)
+
+        self.assertEqual(profile.theme_preference, "STONE")
+        self.assertEqual(response.data["theme_preference"], "STONE")

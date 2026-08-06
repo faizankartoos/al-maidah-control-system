@@ -623,3 +623,259 @@ body.system-theme-day .welcome-screen__content {
 body.system-theme-day .welcome-screen__subtitle {
   color: rgba(51, 65, 85, 0.8);
 }
+
+.system-theme-scheme-day .bg-slate-950,
+.system-theme-scheme-day .bg-slate-950\/90,
+.system-theme-scheme-day .bg-slate-950\/95,
+.system-theme-scheme-day .bg-slate-950\/80,
+.system-theme-scheme-day .bg-slate-950\/70,
+.system-theme-scheme-day .bg-slate-950\/60,
+.system-theme-scheme-day .bg-slate-950\/50 {
+  background-color: #fffaf4 !important;
+}
+
+.system-theme-scheme-day .bg-slate-900,
+.system-theme-scheme-day .bg-slate-900\/90,
+.system-theme-scheme-day .bg-slate-900\/80,
+.system-theme-scheme-day .bg-slate-900\/70,
+.system-theme-scheme-day .bg-slate-900\/60,
+.system-theme-scheme-day .bg-slate-900\/50,
+.system-theme-scheme-day .bg-gray-900,
+.system-theme-scheme-day .bg-gray-900\/60,
+.system-theme-scheme-day .bg-gray-900\/40 {
+  background-color: #f7efe6 !important;
+}
+
+.system-theme-scheme-day .bg-slate-800,
+.system-theme-scheme-day .bg-slate-700,
+.system-theme-scheme-day .bg-gray-800,
+.system-theme-scheme-day .bg-gray-700 {
+  background-color: #eadfce !important;
+}
+
+.system-theme-scheme-day .bg-gray-950\/70,
+.system-theme-scheme-day .bg-gray-950\/60,
+.system-theme-scheme-day .bg-gray-950\/40 {
+  background-color: rgba(255, 250, 244, 0.96) !important;
+}
+
+.system-theme-scheme-day .border-slate-900,
+.system-theme-scheme-day .border-slate-800,
+.system-theme-scheme-day .border-slate-700,
+.system-theme-scheme-day .border-slate-600,
+.system-theme-scheme-day .border-gray-900,
+.system-theme-scheme-day .border-gray-800,
+.system-theme-scheme-day .border-gray-700 {
+  border-color: #d8cbb8 !important;
+}
+
+.system-theme-scheme-day .text-white,
+.system-theme-scheme-day .text-slate-100,
+.system-theme-scheme-day .text-slate-200,
+.system-theme-scheme-day .text-gray-100,
+.system-theme-scheme-day .text-gray-200 {
+  color: #1f2937 !important;
+}
+
+.system-theme-scheme-day .text-slate-300,
+.system-theme-scheme-day .text-gray-300 {
+  color: #4b5563 !important;
+}
+
+.system-theme-scheme-day .text-slate-400,
+.system-theme-scheme-day .text-gray-400 {
+  color: #6b7280 !important;
+}
+
+.system-theme-scheme-day .text-slate-500,
+.system-theme-scheme-day .text-gray-500 {
+  color: #8b7355 !important;
+}
+
+.system-theme-scheme-day .text-cyan-100,
+.system-theme-scheme-day .text-cyan-200,
+.system-theme-scheme-day .text-cyan-300,
+.system-theme-scheme-day .text-sky-200,
+.system-theme-scheme-day .text-sky-300 {
+  color: #0f766e !important;
+}
+
+.system-theme-scheme-day .text-amber-100,
+.system-theme-scheme-day .text-amber-200,
+.system-theme-scheme-day .text-amber-300 {
+  color: #b45309 !important;
+}
+
+body.system-theme-scheme-day .welcome-screen {
+  background: #f8f1e8;
+}
+
+body.system-theme-scheme-day .welcome-screen__veil {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(15, 118, 110, 0.13), transparent 22%),
+    radial-gradient(circle at 50% 50%, rgba(217, 119, 6, 0.12), transparent 34%),
+    linear-gradient(135deg, #fffaf4 0%, #f7efe6 50%, #eadfce 100%);
+}
+
+.system-theme-scheme-stone .bg-slate-950,
+.system-theme-scheme-stone .bg-slate-950\/90,
+.system-theme-scheme-stone .bg-slate-950\/95,
+.system-theme-scheme-stone .bg-slate-950\/80,
+.system-theme-scheme-stone .bg-slate-950\/70,
+.system-theme-scheme-stone .bg-slate-950\/60,
+.system-theme-scheme-stone .bg-slate-950\/50 {
+  background-color: #ffffff !important;
+}
+
+.system-theme-scheme-stone .bg-slate-900,
+.system-theme-scheme-stone .bg-slate-900\/90,
+.system-theme-scheme-stone .bg-slate-900\/80,
+.system-theme-scheme-stone .bg-slate-900\/70,
+.system-theme-scheme-stone .bg-slate-900\/60,
+.system-theme-scheme-stone .bg-slate-900\/50,
+.system-theme-scheme-stone .bg-gray-900,
+.system-theme-scheme-stone .bg-gray-900\/60,
+.system-theme-scheme-stone .bg-gray-900\/40 {
+  background-color: #f3f4f6 !important;
+}
+
+.system-theme-scheme-stone .bg-slate-800,
+.system-theme-scheme-stone .bg-slate-700,
+.system-theme-scheme-stone .bg-gray-800,
+.system-theme-scheme-stone .bg-gray-700 {
+  background-color: #e5e7eb !important;
+}
+
+.system-theme-scheme-stone .bg-gray-950\/70,
+.system-theme-scheme-stone .bg-gray-950\/60,
+.system-theme-scheme-stone .bg-gray-950\/40 {
+  background-color: rgba(248, 250, 252, 0.96) !important;
+}
+
+.system-theme-scheme-stone .border-slate-900,
+.system-theme-scheme-stone .border-slate-800,
+.system-theme-scheme-stone .border-slate-700,
+.system-theme-scheme-stone .border-slate-600,
+.system-theme-scheme-stone .border-gray-900,
+.system-theme-scheme-stone .border-gray-800,
+.system-theme-scheme-stone .border-gray-700 {
+  border-color: #d1d5db !important;
+}
+
+.system-theme-scheme-stone .text-white,
+.system-theme-scheme-stone .text-slate-100,
+.system-theme-scheme-stone .text-slate-200,
+.system-theme-scheme-stone .text-gray-100,
+.system-theme-scheme-stone .text-gray-200 {
+  color: #111827 !important;
+}
+
+.system-theme-scheme-stone .text-slate-300,
+.system-theme-scheme-stone .text-gray-300 {
+  color: #374151 !important;
+}
+
+.system-theme-scheme-stone .text-slate-400,
+.system-theme-scheme-stone .text-gray-400 {
+  color: #6b7280 !important;
+}
+
+.system-theme-scheme-stone .text-slate-500,
+.system-theme-scheme-stone .text-gray-500 {
+  color: #6b7280 !important;
+}
+
+.system-theme-scheme-stone .text-cyan-100,
+.system-theme-scheme-stone .text-cyan-200,
+.system-theme-scheme-stone .text-cyan-300,
+.system-theme-scheme-stone .text-sky-200,
+.system-theme-scheme-stone .text-sky-300 {
+  color: #1d4ed8 !important;
+}
+
+body.system-theme-scheme-stone .welcome-screen {
+  background: #f3f4f6;
+}
+
+body.system-theme-scheme-stone .welcome-screen__veil {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(29, 78, 216, 0.12), transparent 22%),
+    radial-gradient(circle at 50% 50%, rgba(107, 114, 128, 0.08), transparent 34%),
+    linear-gradient(135deg, #ffffff 0%, #f3f4f6 50%, #e5e7eb 100%);
+}
+
+.system-theme-scheme-charcoal .bg-slate-950,
+.system-theme-scheme-charcoal .bg-slate-950\/90,
+.system-theme-scheme-charcoal .bg-slate-950\/95,
+.system-theme-scheme-charcoal .bg-slate-950\/80,
+.system-theme-scheme-charcoal .bg-slate-950\/70,
+.system-theme-scheme-charcoal .bg-slate-950\/60,
+.system-theme-scheme-charcoal .bg-slate-950\/50 {
+  background-color: #16202a !important;
+}
+
+.system-theme-scheme-charcoal .bg-slate-900,
+.system-theme-scheme-charcoal .bg-slate-900\/90,
+.system-theme-scheme-charcoal .bg-slate-900\/80,
+.system-theme-scheme-charcoal .bg-slate-900\/70,
+.system-theme-scheme-charcoal .bg-slate-900\/60,
+.system-theme-scheme-charcoal .bg-slate-900\/50,
+.system-theme-scheme-charcoal .bg-gray-900,
+.system-theme-scheme-charcoal .bg-gray-900\/60,
+.system-theme-scheme-charcoal .bg-gray-900\/40 {
+  background-color: #1c2733 !important;
+}
+
+.system-theme-scheme-charcoal .bg-slate-800,
+.system-theme-scheme-charcoal .bg-slate-700,
+.system-theme-scheme-charcoal .bg-gray-800,
+.system-theme-scheme-charcoal .bg-gray-700 {
+  background-color: #263746 !important;
+}
+
+.system-theme-scheme-charcoal .border-slate-900,
+.system-theme-scheme-charcoal .border-slate-800,
+.system-theme-scheme-charcoal .border-slate-700,
+.system-theme-scheme-charcoal .border-slate-600,
+.system-theme-scheme-charcoal .border-gray-900,
+.system-theme-scheme-charcoal .border-gray-800,
+.system-theme-scheme-charcoal .border-gray-700 {
+  border-color: #314657 !important;
+}
+
+.system-theme-scheme-charcoal .text-slate-300,
+.system-theme-scheme-charcoal .text-gray-300 {
+  color: #cbd5e1 !important;
+}
+
+.system-theme-scheme-charcoal .text-slate-400,
+.system-theme-scheme-charcoal .text-gray-400 {
+  color: #94a3b8 !important;
+}
+
+.system-theme-scheme-charcoal .text-slate-500,
+.system-theme-scheme-charcoal .text-gray-500 {
+  color: #64748b !important;
+}
+
+.system-theme-scheme-charcoal .text-emerald-100,
+.system-theme-scheme-charcoal .text-emerald-200,
+.system-theme-scheme-charcoal .text-emerald-300,
+.system-theme-scheme-charcoal .text-cyan-100,
+.system-theme-scheme-charcoal .text-cyan-200,
+.system-theme-scheme-charcoal .text-cyan-300,
+.system-theme-scheme-charcoal .text-sky-200,
+.system-theme-scheme-charcoal .text-sky-300 {
+  color: #14b8a6 !important;
+}
+
+body.system-theme-scheme-charcoal .welcome-screen {
+  background: #0f1720;
+}
+
+body.system-theme-scheme-charcoal .welcome-screen__veil {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(20, 184, 166, 0.14), transparent 22%),
+    radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.1), transparent 34%),
+    linear-gradient(135deg, #101923 0%, #16202a 50%, #1c2733 100%);
+}

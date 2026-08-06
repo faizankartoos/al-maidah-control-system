@@ -62,6 +62,15 @@ function paymentBadge(status) {
   return "border-amber-500/30 bg-amber-500/10 text-amber-300";
 }
 
+function statusAccent(status) {
+  if (status === "READY") return "from-emerald-400/90 via-emerald-500/55 to-transparent";
+  if (status === "PROCESSING") return "from-sky-400/90 via-sky-500/55 to-transparent";
+  if (status === "SCHEDULED") return "from-amber-300/95 via-amber-500/55 to-transparent";
+  if (status === "COMPLETED") return "from-violet-400/90 via-violet-500/55 to-transparent";
+  if (status === "CANCELLED") return "from-rose-400/90 via-rose-500/55 to-transparent";
+  return "from-slate-400/80 via-slate-500/40 to-transparent";
+}
+
 function acceptanceBadge(status) {
   if (status === "ACCEPTED") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
   if (status === "PENDING") return "border-amber-500/30 bg-amber-500/10 text-amber-300";
@@ -148,6 +157,22 @@ function orderItemsPreview(order) {
   const extraCount = items.length - 3;
 
   return extraCount > 0 ? `${preview} • +${extraCount} more` : preview;
+}
+
+function orderTimingSummary(order) {
+  if (order.order_status === "SCHEDULED" && order.scheduled_time) {
+    return `Scheduled for ${formatDateTime(order.scheduled_time)}`;
+  }
+
+  return `Created ${formatDateTime(order.created_at)}`;
+}
+
+function wasOrderUpdated(order) {
+  if (!order?.created_at || !order?.updated_at) {
+    return false;
+  }
+
+  return new Date(order.updated_at).getTime() - new Date(order.created_at).getTime() > 60000;
 }
 
 function getSortedCategories(products) {
@@ -1487,7 +1512,7 @@ async function submitCollectPayment(){
 	  </div>
 
 	  {compactMode ? (
-	  <div className="space-y-4">
+	  <div className="space-y-5">
 	    {filteredOrders.length === 0 ? (
 	      <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
 	        No orders match the current filter yet.
@@ -1496,13 +1521,21 @@ async function submitCollectPayment(){
 	      filteredOrders.map(order => (
 	        <div
             key={order.id}
+            className={`rounded-[30px] p-[1px] shadow-[0_24px_70px_rgba(2,6,23,0.34)] transition-all duration-300 ${
+              highlightedOrderId === order.id
+                ? "bg-[linear-gradient(135deg,_rgba(251,191,36,0.55),_rgba(56,189,248,0.18),_rgba(15,23,42,0.92))]"
+                : "bg-[linear-gradient(135deg,_rgba(71,85,105,0.92),_rgba(30,41,59,0.84),_rgba(2,6,23,0.96))]"
+            }`}
+          >
+	        <div
             onDoubleClick={(event) => toggleOrderHighlight(event, order.id)}
-            className={`rounded-3xl border p-5 transition-all duration-300 ${
+            className={`relative overflow-hidden rounded-[30px] border p-5 transition-all duration-300 ${
               highlightedOrderId === order.id
                 ? "border-amber-300/70 bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.18),_rgba(15,23,42,0.96)_58%)] shadow-[0_0_0_1px_rgba(253,224,71,0.25),0_24px_70px_rgba(251,191,36,0.18)]"
                 : "border-slate-800 bg-slate-950/70 hover:border-slate-700"
             }`}
           >
+              <div className="pointer-events-none absolute inset-[1px] rounded-[28px] border border-white/[0.04]" />
 	          <div className="flex flex-col gap-4">
 	            <div className="flex flex-wrap items-center gap-2">
 	              <div className="text-xl font-semibold text-white">#{order.id}</div>
@@ -1658,160 +1691,260 @@ async function submitCollectPayment(){
               )}
 	          </div>
 	        </div>
+	        </div>
 	      ))
 	    )}
 	  </div>
 	  ) : (
-	  <div className="rounded-3xl border border-slate-800 bg-slate-950/70 overflow-x-auto">
-	    <div className="min-w-[1180px]">
-	    <div className="grid grid-cols-[1.2fr_0.9fr_0.9fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b border-slate-800 bg-slate-900/80 px-4 py-4 text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-	      <div>Order</div>
-	      <div>Status</div>
-	      <div>Payment</div>
-	      <div>Mode</div>
-	      <div>Remaining</div>
-	      <div>Total</div>
-	      <div>Actions</div>
-		    </div>
+	  <div className="space-y-5">
+	    {filteredOrders.length === 0 ? (
+	      <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
+	        No orders match the current filter yet.
+	      </div>
+	    ) : (
+	      filteredOrders.map((order) => (
+	        <div
+	          key={order.id}
+	          className={`rounded-[30px] p-[1px] shadow-[0_26px_80px_rgba(2,6,23,0.38)] transition-all duration-300 ${
+	            highlightedOrderId === order.id
+	              ? "bg-[linear-gradient(135deg,_rgba(251,191,36,0.55),_rgba(56,189,248,0.18),_rgba(15,23,42,0.92))]"
+	              : "bg-[linear-gradient(135deg,_rgba(71,85,105,0.95),_rgba(30,41,59,0.86),_rgba(2,6,23,0.97))]"
+	          }`}
+	        >
+	          <div
+	            onDoubleClick={(event) => toggleOrderHighlight(event, order.id)}
+	            className={`group relative overflow-hidden rounded-[30px] border transition-all duration-300 ${
+	              highlightedOrderId === order.id
+	                ? "border-amber-300/65 bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.16),_rgba(15,23,42,0.96)_58%)] shadow-[0_0_0_1px_rgba(253,224,71,0.24),0_26px_80px_rgba(251,191,36,0.16)]"
+	                : "border-slate-800 bg-slate-950/78 hover:border-slate-700 hover:shadow-[0_18px_45px_rgba(15,23,42,0.32)]"
+	            }`}
+	          >
+	          <div className={`absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b ${statusAccent(order.order_status)}`} />
+              <div className="pointer-events-none absolute inset-[1px] rounded-[28px] border border-white/[0.04]" />
 
-		    {filteredOrders.map(order => (
+	          <div className="relative p-5 sm:p-6">
+	            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+	              <div className="min-w-0 flex-1">
+	                <div className="flex flex-wrap items-center gap-2">
+	                  <div className="text-lg font-semibold tracking-tight text-white sm:text-xl">
+	                    Order #{order.id}
+	                  </div>
+	                  <span className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${statusBadge(order.order_status)}`}>
+	                    {order.order_status}
+	                  </span>
+	                  <span className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${paymentBadge(order.payment_status)}`}>
+	                    {order.payment_status}
+	                  </span>
+	                  <span className="inline-flex rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-200">
+	                    {orderTypeLabel(order.order_type)}
+	                  </span>
+	                  {wasOrderUpdated(order) && (
+	                    <span className="inline-flex rounded-full border border-amber-400/35 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100">
+	                      Updated
+	                    </span>
+	                  )}
+	                </div>
 
-	      <div
-          key={order.id}
-          onDoubleClick={(event) => toggleOrderHighlight(event, order.id)}
-          className={`grid grid-cols-[1.2fr_0.9fr_0.9fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b px-4 py-4 transition-all duration-300 ${
-            highlightedOrderId === order.id
-              ? "border-amber-300/35 bg-[linear-gradient(90deg,_rgba(251,191,36,0.14),_rgba(30,41,59,0.72),_rgba(251,191,36,0.08))] shadow-[inset_0_0_0_1px_rgba(253,224,71,0.18)]"
-              : "border-slate-800 hover:bg-slate-900/45"
-          }`}
-        >
+	                <div className="mt-4 rounded-[28px] border border-slate-800/90 bg-[linear-gradient(135deg,_rgba(14,165,233,0.14),_rgba(15,23,42,0.94))] p-5 shadow-[0_18px_40px_rgba(14,165,233,0.08)]">
+	                  <div className="text-[11px] font-semibold uppercase tracking-[0.3em] text-sky-200">
+	                    Order Focus
+	                  </div>
+	                  <div className="mt-3 grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(290px,0.9fr)]">
+	                    <div className="min-w-0">
+	                      <div className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-300">
+	                        {orderTypeLabel(order.order_type)}
+	                      </div>
+	                      <div className="mt-2 text-2xl font-semibold leading-tight text-white sm:text-3xl">
+	                        {orderItemsPreview(order)}
+	                      </div>
+	                      <div className="mt-4 text-xl font-semibold leading-tight text-amber-100 sm:text-2xl">
+	                        {orderPrimaryHighlight(order)}
+	                      </div>
+	                      <div className="mt-2 text-sm leading-6 text-slate-300 sm:text-base">
+	                        {orderSecondaryHighlight(order)}
+	                      </div>
+	                    </div>
 
-	        <div>
-	          <div className="text-base font-semibold text-white">#{order.id}</div>
-	          <div className="mt-2 text-lg font-semibold leading-tight text-sky-100">{orderTypeLabel(order.order_type)}</div>
-	          <div className="mt-1 text-base font-semibold leading-tight text-amber-100">
-	            {orderPrimaryHighlight(order)}
-	          </div>
-	          <div className="mt-1 text-sm text-slate-300">
-	            {orderSecondaryHighlight(order)}
-	          </div>
-	          <div className="mt-2 text-sm font-medium leading-6 text-white" title={orderItemsPreview(order)}>
-	            {orderItemsPreview(order)}
-	          </div>
-	          <div className="mt-1 text-xs text-slate-500">
-	            {order.order_status === "SCHEDULED" && order.scheduled_time
-	              ? `For ${formatDateTime(order.scheduled_time)}`
-	              : formatDateTime(order.created_at)}
+	                    <div className="grid gap-3 self-start">
+	                      <div className="rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
+	                        <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+	                          Timing
+	                        </div>
+	                        <div className="mt-2 text-sm font-semibold text-slate-100">
+	                          {orderTimingSummary(order)}
+	                        </div>
+	                        {wasOrderUpdated(order) && (
+	                          <div className="mt-1 text-xs text-amber-200">
+	                            Last updated {formatDateTime(order.updated_at)}
+	                          </div>
+	                        )}
+	                      </div>
+
+	                      <div className="rounded-2xl border border-slate-800 bg-slate-950/50 px-4 py-3">
+	                        <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
+	                          Quick Locator
+	                        </div>
+	                        <div className="mt-2 text-sm font-medium leading-6 text-white">
+	                          {orderQuickLocator(order)}
+	                        </div>
+	                        {order.delivery_boy_name && (
+	                          <div className="mt-2 text-xs text-slate-400">
+	                            Delivery Boy: <span className="font-medium text-slate-200">{order.delivery_boy_name}</span>
+	                          </div>
+	                        )}
+	                      </div>
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+
+	              <div className="w-full xl:max-w-[320px]">
+	                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+	                  <div className="rounded-[24px] border border-emerald-500/20 bg-emerald-500/10 px-4 py-4">
+	                    <div className="text-[11px] font-semibold uppercase tracking-[0.26em] text-emerald-100/70">
+	                      Total
+	                    </div>
+	                    <div className="mt-2 text-2xl font-semibold text-white">
+	                      Rs {formatMoney(order.total_amount)}
+	                    </div>
+	                  </div>
+
+	                  <div className="rounded-[24px] border border-amber-500/20 bg-amber-500/10 px-4 py-4">
+	                    <div className="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber-100/70">
+	                      Remaining
+	                    </div>
+	                    <div className="mt-2 text-2xl font-semibold text-amber-100">
+	                      Rs {formatMoney(order.remaining_amount)}
+	                    </div>
+	                  </div>
+
+	                  <div className="rounded-[24px] border border-slate-800 bg-slate-900/80 px-4 py-4 sm:col-span-2 xl:col-span-1">
+	                    <div className="text-[11px] font-semibold uppercase tracking-[0.26em] text-slate-500">
+	                      Payment Mode
+	                    </div>
+	                    <div className="mt-2 text-lg font-semibold text-slate-100">
+	                      {order.payment_mode || "-"}
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+
+	            {(order.order_note || highlightedOrderId === order.id) && (
+	              <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+	                {order.order_note ? (
+	                  <div className="rounded-2xl border border-amber-300/25 bg-amber-100/5 px-4 py-3">
+	                    <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-100/75">
+	                      Order Note
+	                    </div>
+	                    <div className="mt-2 text-sm leading-6 text-amber-50">
+	                      {order.order_note}
+	                    </div>
+	                  </div>
+	                ) : (
+	                  <div />
+	                )}
+
+	                {highlightedOrderId === order.id && (
+	                  <div className="rounded-2xl border border-amber-300/30 bg-amber-200/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.26em] text-amber-100">
+	                    Focus mode enabled
+	                  </div>
+	                )}
+	              </div>
+	            )}
+
+	            <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-800/90 pt-4">
+	              <button
+	                onClick={() => viewOrder(order.id)}
+	                className="rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500"
+	              >
+	                View
+	              </button>
+
+	              {order.order_status === "SCHEDULED" && (
+	                <button
+	                  onClick={() => startScheduledOrder(order)}
+	                  className="rounded-2xl bg-green-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-green-500"
+	                >
+	                  Start Scheduled Order
+	                </button>
+	              )}
+
+	              {["PROCESSING", "READY"].includes(order.order_status) && (
+	                <button
+	                  onClick={() => updateOrder(order.id)}
+	                  className="rounded-2xl bg-yellow-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-yellow-500"
+	                >
+	                  Update
+	                </button>
+	              )}
+
+	              {["PROCESSING", "SCHEDULED"].includes(order.order_status) && (
+	                <button
+	                  onClick={() => cancelOrder(order)}
+	                  className="rounded-2xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-red-500"
+	                >
+	                  Cancel
+	                </button>
+	              )}
+
+	              {order.order_status === "PROCESSING" && (
+	                <button
+	                  onClick={() => markOrderReady(order)}
+	                  className="rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500"
+	                >
+	                  Ready
+	                </button>
+	              )}
+
+	              {order.order_status === "READY" && (
+	                <button
+	                  onClick={() => completeOrder(order)}
+	                  className="rounded-2xl bg-green-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-green-500"
+	                >
+	                  Complete
+	                </button>
+	              )}
+
+	              {order.payment_status !== "PAID"
+	                && order.order_status !== "CANCELLED"
+	                && !(order.order_status === "COMPLETED")
+	                && (
+	                  <button
+	                    onClick={() => {
+	                      if (!canCollectPayments) {
+	                        showCollectDeniedMessage();
+	                        return;
+	                      }
+	                      setSelectedOrder(order);
+	                      setCollectAmount(order.remaining_amount || order.total_amount);
+	                      setCollectMethod("CASH");
+	                      setCollectCashAmount("");
+	                      setCollectOnlineAmount("");
+	                      setShowCollectModal(true);
+	                    }}
+	                    className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
+	                      canCollectPayments
+	                        ? "bg-purple-600 text-white hover:bg-purple-500"
+	                        : "border border-slate-600 bg-slate-700 text-slate-200 hover:bg-slate-600"
+	                    }`}
+	                  >
+	                    {canCollectPayments ? "Collect" : "Collect (Locked)"}
+	                  </button>
+	                )}
+
+	              <button
+	                onClick={() => printOrder(order.id)}
+	                className="rounded-2xl bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-slate-100"
+	              >
+	                Print
+	              </button>
+	            </div>
 	          </div>
 	        </div>
-
-	        <div>
-	          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusBadge(order.order_status)}`}>
-	            {order.order_status}
-	          </span>
 	        </div>
-
-	        <div>
-	          <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${paymentBadge(order.payment_status)}`}>
-	            {order.payment_status}
-	          </span>
-	        </div>
-
-	        <div className="text-sm text-slate-300">{order.payment_mode || "-"}</div>
-	        <div className="text-sm font-semibold text-amber-200">Rs {formatMoney(order.remaining_amount)}</div>
-	        <div className="text-sm font-semibold text-white">Rs {formatMoney(order.total_amount)}</div>
-
-	        <div className="flex gap-2 flex-wrap">
-
-          <button
-          onClick={()=>viewOrder(order.id)}
-          className="bg-blue-600 px-3 py-1 rounded"
-          >
-          View
-          </button>
-
-          {order.order_status === "SCHEDULED" && (
-          <button
-            onClick={()=>startScheduledOrder(order)}
-            className="bg-green-600 px-3 py-1 rounded"
-          >
-            Start Scheduled Order
-          </button>
-          )}
-
-          {["PROCESSING", "READY"].includes(order.order_status) && (
-          <button
-          onClick={()=>updateOrder(order.id)}
-          className="bg-yellow-600 px-3 py-1 rounded"
-          >
-          Update
-          </button>
-          )}
-
-          {["PROCESSING", "SCHEDULED"].includes(order.order_status) && (
-          <button
-          onClick={()=>cancelOrder(order)}
-          className="bg-red-600 px-3 py-1 rounded"
-          >
-          Cancel
-          </button>
-          )}
-
-          {order.order_status === "PROCESSING" && (
-          <button
-          onClick={()=>markOrderReady(order)}
-          className="bg-emerald-600 px-3 py-1 rounded"
-          >
-          Ready
-          </button>
-          )}
-
-          {order.order_status === "READY" && (
-          <button
-          onClick={()=>completeOrder(order)}
-          className="bg-green-600 px-3 py-1 rounded"
-          >
-          Complete
-          </button>
-          )}
-
-          {order.payment_status !== "PAID"
-            && order.order_status !== "CANCELLED"
-            && !(order.order_status === "COMPLETED")
-            && (
-          <button
-          onClick={()=>{
-          if(!canCollectPayments){
-          showCollectDeniedMessage()
-          return
-          }
-          setSelectedOrder(order)
-          setCollectAmount(order.remaining_amount || order.total_amount)
-          setCollectMethod("CASH")
-          setCollectCashAmount("")
-          setCollectOnlineAmount("")
-          setShowCollectModal(true)
-          }}
-          className={`px-3 py-1 rounded ${canCollectPayments ? "bg-purple-600" : "bg-slate-700 border border-slate-600 text-slate-200"}`}
-          >
-          {canCollectPayments ? "Collect" : "Collect (Locked)"}
-          </button>
-          )}
-
-          <button
-            onClick={()=>printOrder(order.id)}
-            className="bg-white text-black px-3 py-1 rounded"
-          >
-            Print
-          </button>
-
-          </div>
-
-      </div>
-
-	    ))}
-
-	    </div>
+	      ))
+	    )}
 	  </div>
 	  )}
 	  </>
@@ -1887,8 +2020,13 @@ async function submitCollectPayment(){
 	      </div>
 	    ) : (
 	      filteredExternalOrders.map((order) => (
-	        <div key={order.id} className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
-	          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+	        <div
+            key={order.id}
+            className="rounded-[30px] bg-[linear-gradient(135deg,_rgba(71,85,105,0.92),_rgba(30,41,59,0.84),_rgba(2,6,23,0.96))] p-[1px] shadow-[0_22px_60px_rgba(2,6,23,0.34)]"
+          >
+	        <div className="relative rounded-[30px] border border-slate-800 bg-slate-950/70 p-5">
+              <div className="pointer-events-none absolute inset-[1px] rounded-[28px] border border-white/[0.04]" />
+	          <div className="relative flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 	            <div className="min-w-0">
 	              <div className="flex flex-wrap items-center gap-2">
 	                <div className="text-xl font-semibold text-white">Order #{order.id}</div>
@@ -1969,6 +2107,7 @@ async function submitCollectPayment(){
 	              )}
 	            </div>
 	          </div>
+	        </div>
 	        </div>
 	      ))
 	    )}
