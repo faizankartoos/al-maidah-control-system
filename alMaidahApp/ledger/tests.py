@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -15,12 +16,12 @@ class AuthenticatedLedgerTestCase(TestCase):
 
     def setUp(self):
         super().setUp()
-        user = User.objects.create_superuser(
+        self.user = User.objects.create_superuser(
             username="ledger-admin",
             password="testpass123",
             email="ledger-admin@example.com",
         )
-        token = Token.objects.create(user=user)
+        token = Token.objects.create(user=self.user)
         self.client.defaults["HTTP_AUTHORIZATION"] = f"Token {token.key}"
 
 
@@ -209,14 +210,14 @@ class CollectFromAccountTests(AuthenticatedLedgerTestCase):
 
 class DeliveryBoyEndpointTests(AuthenticatedLedgerTestCase):
 
-    def test_delivery_boys_endpoint_returns_active_delivery_accounts(self):
+    def test_delivery_boys_endpoint_returns_all_delivery_accounts_sorted(self):
         LedgerAccount.objects.create(
-            name="Active Boy",
+            name="Zubair",
             account_type="DELIVERY",
             is_active=True,
         )
         LedgerAccount.objects.create(
-            name="Inactive Boy",
+            name="Adnan",
             account_type="DELIVERY",
             is_active=False,
         )
@@ -226,25 +227,9 @@ class DeliveryBoyEndpointTests(AuthenticatedLedgerTestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
 
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["name"], "Active Boy")
-        self.assertTrue(payload[0]["is_active"])
-
-    def test_delivery_boys_endpoint_falls_back_to_all_delivery_accounts_when_no_active_exist(self):
-        LedgerAccount.objects.create(
-            name="Inactive Boy",
-            account_type="DELIVERY",
-            is_active=False,
-        )
-
-        response = self.client.get("/api/ledger/delivery-boys/")
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["name"], "Inactive Boy")
+        self.assertEqual([entry["name"] for entry in payload], ["Adnan", "Zubair"])
         self.assertFalse(payload[0]["is_active"])
+        self.assertTrue(payload[1]["is_active"])
 
     def test_collect_updates_linked_completed_order_payment_status(self):
         customer = LedgerAccount.objects.create(
@@ -294,6 +279,188 @@ class DeliveryBoyEndpointTests(AuthenticatedLedgerTestCase):
         payment = OrderPayment.objects.get(order=order)
         self.assertEqual(payment.amount, Decimal("100.00"))
         self.assertEqual(payment.payment_type, "CASH")
+
+    def test_delivery_boy_summary_distinguishes_pending_direct_paid_and_customer_ledger_orders(self):
+        delivery_boy = LedgerAccount.objects.create(
+            name="Summary Rider",
+            account_type="DELIVERY",
+            contact_number="7000000700",
+        )
+        customer = LedgerAccount.objects.create(
+            name="Ledger Customer",
+            account_type="CUSTOMER",
+            contact_number="7000000701",
+        )
+
+        pending_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Pending Rider Customer",
+            customer_phone="9900000700",
+            delivery_boy=delivery_boy,
+            total_amount=Decimal("150.00"),
+        )
+        record_debit(
+            account=delivery_boy,
+            amount=Decimal("150.00"),
+            reference=f"ORDER-{pending_order.id}",
+            description="Rider owes restaurant",
+        )
+
+        direct_paid_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Paid Rider Customer",
+            customer_phone="9900000702",
+            delivery_boy=delivery_boy,
+            total_amount=Decimal("200.00"),
+        )
+        OrderPayment.objects.create(
+            order=direct_paid_order,
+            amount=Decimal("200.00"),
+            payment_type="CASH",
+            cash_amount=Decimal("200.00"),
+            online_amount=Decimal("0.00"),
+        )
+
+        moved_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Ledger Shifted Customer",
+            customer_phone="9900000703",
+            delivery_boy=delivery_boy,
+            customer_account=customer,
+            total_amount=Decimal("180.00"),
+        )
+        record_credit(
+            account=customer,
+            amount=Decimal("180.00"),
+            reference=f"ORDER-{moved_order.id}",
+            description="Customer owes after rider completion",
+        )
+
+        response = self.client.get(
+            f"/api/ledger/delivery-boys/{delivery_boy.id}/summary/",
+            {
+                "from_date": date.today().isoformat(),
+                "to_date": date.today().isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        orders_by_id = {row["id"]: row for row in payload["orders"]}
+
+        self.assertEqual(payload["summary"]["orders_count"], 3)
+        self.assertEqual(payload["summary"]["collectible_order_count"], 1)
+        self.assertEqual(Decimal(str(payload["summary"]["pending_balance"])), Decimal("150.00"))
+        self.assertEqual(Decimal(str(payload["summary"]["direct_paid_total"])), Decimal("200.00"))
+        self.assertEqual(Decimal(str(payload["summary"]["moved_to_customer_total"])), Decimal("180.00"))
+
+        self.assertEqual(orders_by_id[pending_order.id]["settlement_status"], "PENDING_WITH_RIDER")
+        self.assertTrue(orders_by_id[pending_order.id]["can_collect_from_rider"])
+        self.assertEqual(Decimal(str(orders_by_id[pending_order.id]["pending_from_rider"])), Decimal("150.00"))
+
+        self.assertEqual(orders_by_id[direct_paid_order.id]["settlement_status"], "DIRECT_PAID")
+        self.assertFalse(orders_by_id[direct_paid_order.id]["can_collect_from_rider"])
+
+        self.assertEqual(orders_by_id[moved_order.id]["settlement_status"], "MOVED_TO_CUSTOMER_LEDGER")
+        self.assertFalse(orders_by_id[moved_order.id]["can_collect_from_rider"])
+
+    def test_bulk_collect_only_collects_orders_that_still_need_rider_settlement(self):
+        delivery_boy = LedgerAccount.objects.create(
+            name="Bulk Rider",
+            account_type="DELIVERY",
+            contact_number="7000000705",
+        )
+        customer = LedgerAccount.objects.create(
+            name="Bulk Ledger Customer",
+            account_type="CUSTOMER",
+            contact_number="7000000706",
+        )
+
+        collectible_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Collect Me",
+            customer_phone="9900000705",
+            delivery_boy=delivery_boy,
+            total_amount=Decimal("120.00"),
+        )
+        record_debit(
+            account=delivery_boy,
+            amount=Decimal("120.00"),
+            reference=f"ORDER-{collectible_order.id}",
+            description="Rider owes restaurant",
+        )
+
+        direct_paid_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Already Paid",
+            customer_phone="9900000706",
+            delivery_boy=delivery_boy,
+            total_amount=Decimal("210.00"),
+        )
+        OrderPayment.objects.create(
+            order=direct_paid_order,
+            amount=Decimal("210.00"),
+            payment_type="ONLINE",
+            cash_amount=Decimal("0.00"),
+            online_amount=Decimal("210.00"),
+        )
+
+        moved_order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="COMPLETED",
+            payment_status="UNPAID",
+            customer_name="Moved To Ledger",
+            customer_phone="9900000707",
+            delivery_boy=delivery_boy,
+            customer_account=customer,
+            total_amount=Decimal("90.00"),
+        )
+        record_credit(
+            account=customer,
+            amount=Decimal("90.00"),
+            reference=f"ORDER-{moved_order.id}",
+            description="Customer owes after rider completion",
+        )
+
+        response = self.client.post(
+            f"/api/ledger/delivery-boys/{delivery_boy.id}/collect-all/",
+            {
+                "from_date": date.today().isoformat(),
+                "to_date": date.today().isoformat(),
+                "payment_type": "CASH",
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["summary"]["collected_count"], 1)
+        self.assertEqual(payload["summary"]["skipped_count"], 2)
+        self.assertEqual(Decimal(str(payload["summary"]["total_collected_amount"])), Decimal("120.00"))
+
+        collectible_order.refresh_from_db()
+        delivery_boy.refresh_from_db()
+        cash = get_cash_drawer()
+        cash.refresh_from_db()
+
+        self.assertEqual(collectible_order.payment_status, "PAID")
+        self.assertEqual(delivery_boy.balance, Decimal("0.00"))
+        self.assertEqual(cash.balance, Decimal("120.00"))
+        self.assertEqual(
+            OrderPayment.objects.filter(order=collectible_order).aggregate(total=Sum("amount"))["total"],
+            Decimal("120.00"),
+        )
 
 
 class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
@@ -833,3 +1000,154 @@ class VendorLedgerTests(AuthenticatedLedgerTestCase):
         vendor.refresh_from_db()
         self.assertEqual(vendor.balance, Decimal("0.00"))
         self.assertTrue(LedgerEntry.objects.filter(reference=f"UNDO-ENTRY-{original_entry.id}").exists())
+
+    def test_vendor_manual_adjustment_stores_statement_metadata(self):
+        vendor = LedgerAccount.objects.create(
+            name="Adjustment Vendor",
+            account_type="VENDOR",
+        )
+
+        response = self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "ADJUST_UP",
+                "amount": "150.00",
+                "entry_date": "2026-08-01",
+                "document_number": "MAN-44",
+                "note": "Balance correction after invoice dispute",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        entry = LedgerEntry.objects.get(
+            ledger_account=vendor,
+            reference="VENDOR-ADJUST-UP",
+        )
+
+        vendor.refresh_from_db()
+
+        self.assertEqual(vendor.balance, Decimal("150.00"))
+        self.assertEqual(str(entry.entry_date), "2026-08-01")
+        self.assertEqual(entry.document_number, "MAN-44")
+        self.assertEqual(entry.created_by, self.user)
+
+    def test_vendor_statement_filters_return_opening_closing_and_totals(self):
+        vendor = LedgerAccount.objects.create(
+            name="Statement Vendor",
+            account_type="VENDOR",
+        )
+
+        record_credit(
+            account=vendor,
+            amount=Decimal("100.00"),
+            payment_type="SYSTEM",
+            reference="VENDOR-DUE",
+            description="Opening vendor due",
+            entry_date=date(2026, 8, 1),
+            document_number="INV-1",
+            created_by=self.user,
+        )
+        record_debit(
+            account=vendor,
+            amount=Decimal("25.00"),
+            payment_type="CASH",
+            reference="VENDOR-PAY",
+            description="Part payment",
+            entry_date=date(2026, 8, 3),
+            document_number="PAY-1",
+            created_by=self.user,
+        )
+        record_credit(
+            account=vendor,
+            amount=Decimal("40.00"),
+            payment_type="SYSTEM",
+            reference="VENDOR-ADJUST-UP",
+            description="Manual correction",
+            entry_date=date(2026, 8, 5),
+            document_number="ADJ-1",
+            created_by=self.user,
+        )
+
+        response = self.client.get(
+            f"/api/accounts/{vendor.id}/",
+            {
+                "start_date": "2026-08-03",
+                "end_date": "2026-08-05",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+
+        self.assertEqual(Decimal(str(payload["summary"]["statement_opening_balance"])), Decimal("100.00"))
+        self.assertEqual(Decimal(str(payload["summary"]["statement_closing_balance"])), Decimal("115.00"))
+        self.assertEqual(Decimal(str(payload["summary"]["current_balance"])), Decimal("115.00"))
+        self.assertEqual(payload["summary"]["transaction_count"], 2)
+        self.assertEqual(payload["filters"]["start_date"], "2026-08-03")
+        self.assertEqual(payload["filters"]["end_date"], "2026-08-05")
+        self.assertEqual(Decimal(str(payload["vendor_statement"]["payments_made"])), Decimal("25.00"))
+        self.assertEqual(Decimal(str(payload["vendor_statement"]["adjustments_up"])), Decimal("40.00"))
+        self.assertEqual(Decimal(str(payload["vendor_statement"]["due_added"])), Decimal("0.00"))
+        self.assertEqual(payload["transactions"][0]["document_number"], "PAY-1")
+        self.assertEqual(payload["transactions"][1]["created_by_name"], "ledger-admin")
+
+    def test_vendor_payment_undo_preserves_statement_fields_and_reverses_cash(self):
+        vendor = LedgerAccount.objects.create(
+            name="Payment Undo Vendor",
+            account_type="VENDOR",
+        )
+
+        self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "OWE",
+                "amount": "100.00",
+                "note": "Base due",
+            },
+        )
+        pay_response = self.client.post(
+            "/api/ledger/vendor-entry/",
+            {
+                "account_id": vendor.id,
+                "mode": "PAY",
+                "amount": "40.00",
+                "payment_type": "ONLINE",
+                "entry_date": "2026-08-04",
+                "document_number": "PAY-44",
+                "note": "Bank transfer",
+            },
+        )
+
+        self.assertEqual(pay_response.status_code, 201)
+
+        payment_entry = LedgerEntry.objects.get(
+            ledger_account=vendor,
+            reference="VENDOR-PAY",
+        )
+
+        undo_response = self.client.post(f"/api/ledger/entries/{payment_entry.id}/undo/")
+
+        self.assertEqual(undo_response.status_code, 200)
+
+        vendor.refresh_from_db()
+
+        self.assertEqual(vendor.balance, Decimal("100.00"))
+
+        undo_entry = LedgerEntry.objects.get(
+            ledger_account=vendor,
+            reference=f"UNDO-ENTRY-{payment_entry.id}",
+        )
+        cash_undo_entry = LedgerEntry.objects.get(
+            ledger_account=get_cash_drawer(),
+            reference=f"UNDO-ENTRY-{payment_entry.id}",
+        )
+
+        self.assertEqual(str(undo_entry.entry_date), "2026-08-04")
+        self.assertEqual(undo_entry.document_number, "PAY-44")
+        self.assertEqual(undo_entry.created_by, self.user)
+        self.assertEqual(str(cash_undo_entry.entry_date), "2026-08-04")
+        self.assertEqual(cash_undo_entry.document_number, "PAY-44")

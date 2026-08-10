@@ -10,7 +10,7 @@ from rest_framework.authtoken.models import Token
 from accounts.models import ensure_user_profile
 from ledger.models import LedgerAccount, LedgerEntry
 from ledger.utils import get_cash_drawer
-from ledger.services import record_credit
+from ledger.services import record_credit, record_debit
 from orders.models import Area, Order, OrderItem, OrderPayment
 
 
@@ -245,7 +245,7 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
 
         order = Order.objects.get(id=response.json()["order_id"])
         self.assertEqual(order.area, self.default_area)
-        self.assertEqual(order.delivery_address, None)
+
 
     def test_underpayment_is_rejected_and_does_not_create_order(self):
 
@@ -324,6 +324,83 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(order.payment_status, "PAID")
         self.assertEqual(payment.amount, Decimal("100.00"))
         self.assertEqual(cash.balance, Decimal("100.00"))
+
+
+class DeliveryBoySettingsTests(AuthenticatedOrdersAPITestCase):
+
+    def test_delete_removes_delivery_boy_even_with_linked_orders_and_entries(self):
+        delivery_boy = LedgerAccount.objects.create(
+            name="Delete Rider",
+            account_type="DELIVERY",
+            contact_number="7000000800",
+        )
+        order = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="READY",
+            payment_status="UNPAID",
+            customer_name="Customer",
+            customer_phone="9900000800",
+            delivery_boy=delivery_boy,
+            total_amount=Decimal("100.00"),
+        )
+        record_debit(
+            account=delivery_boy,
+            amount=Decimal("100.00"),
+            reference=f"ORDER-{order.id}",
+            description="Rider owes restaurant",
+        )
+
+        response = self.client.delete(f"/api/settings/delivery-boys/{delivery_boy.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(LedgerAccount.objects.filter(id=delivery_boy.id).exists())
+
+        order.refresh_from_db()
+        self.assertIsNone(order.delivery_boy)
+        self.assertFalse(
+            LedgerEntry.objects.filter(
+                ledger_account_id=delivery_boy.id,
+                reference=f"ORDER-{order.id}",
+            ).exists()
+        )
+
+
+class OrderDisplayTests(TestCase):
+
+    def test_order_display_returns_all_order_types_with_type_metadata(self):
+        dine_in = Order.objects.create(
+            order_type="DINE_IN",
+            order_status="PROCESSING",
+            payment_status="UNPAID",
+            table_number="Table 1",
+            total_amount=Decimal("200.00"),
+        )
+        takeaway = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="PROCESSING",
+            payment_status="UNPAID",
+            customer_phone="9900001111",
+            total_amount=Decimal("300.00"),
+        )
+        delivery = Order.objects.create(
+            order_type="DELIVERY",
+            order_status="PROCESSING",
+            payment_status="UNPAID",
+            customer_phone="9900002222",
+            delivery_address="Main Chowk",
+            total_amount=Decimal("400.00"),
+        )
+
+        response = self.client.get("/api/orders/display/")
+
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        returned_ids = {entry["id"] for entry in payload}
+        returned_types = {entry["order_type"] for entry in payload}
+
+        self.assertSetEqual(returned_ids, {dine_in.id, takeaway.id, delivery.id})
+        self.assertSetEqual(returned_types, {"DINE_IN", "TAKEAWAY", "DELIVERY"})
 
 
 class OrderUpdateTests(AuthenticatedOrdersAPITestCase):

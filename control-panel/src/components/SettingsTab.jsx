@@ -20,7 +20,6 @@ function emptyDeliveryBoyForm() {
     contact_number: "",
     address: "",
     opening_balance: "0.00",
-    is_active: true,
   };
 }
 
@@ -75,7 +74,6 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
         contact_number: boy.contact_number || "",
         address: boy.address || "",
         opening_balance: String(boy.opening_balance ?? "0.00"),
-        is_active: Boolean(boy.is_active),
       };
     });
 
@@ -115,10 +113,6 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
     return areas.filter((area) => area.name.toLowerCase().includes(query));
   }, [areaSearch, areas]);
 
-  const activeDeliveryBoysCount = useMemo(
-    () => deliveryBoys.filter((boy) => boy.is_active).length,
-    [deliveryBoys]
-  );
   const activeTheme = getThemeConfig(currentUser?.theme_preference);
 
   async function createArea() {
@@ -174,8 +168,7 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
 
       const response = await api.post("/settings/delivery-boys/", newDeliveryBoy);
       const nextBoys = [...deliveryBoys, response.data].sort(
-        (left, right) => Number(Boolean(right.is_active)) - Number(Boolean(left.is_active))
-          || left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
+        (left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
       );
       setDeliveryBoys(nextBoys);
       primeBoyDrafts(nextBoys);
@@ -207,7 +200,7 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
   }
 
   async function deleteDeliveryBoy(accountId) {
-    const confirmed = window.confirm("Remove this delivery boy from active use?");
+    const confirmed = window.confirm("Delete this delivery boy completely?");
     if (!confirmed) {
       return;
     }
@@ -377,8 +370,8 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
         <SettingsLauncherCard
           eyebrow="Rider Access"
           title="Delivery boys"
-          description="Open a separate window to add, edit, archive, or remove delivery boys without crowding this page."
-          stats={`${activeDeliveryBoysCount} active of ${deliveryBoys.length} total`}
+          description="Open a separate window to add, edit, or delete delivery boys without crowding this page."
+          stats={`${deliveryBoys.length} delivery boy${deliveryBoys.length === 1 ? "" : "s"}`}
           actionLabel="Open delivery boys"
           accent="sky"
           onClick={() => setActiveWindow("boys")}
@@ -527,7 +520,7 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
           <div className="mt-5">
             <div className="text-lg font-semibold text-white">Delivery Boys</div>
             <div className="mt-1 text-sm text-slate-400">
-              Add, edit, or remove riders from one simple place. Riders with linked history are archived safely instead of being hard deleted.
+              Add, edit, or delete riders from one simple place. There is no archive layer now, so what you see here is the full rider list.
             </div>
           </div>
 
@@ -583,11 +576,6 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
                       <div className="mt-1 text-sm text-slate-400">
                         {boy.contact_number || "No phone"} • Balance {formatMoney(boy.balance)}
                       </div>
-                    </div>
-                    <div className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${
-                      draft.is_active ? "bg-emerald-500/15 text-emerald-200" : "bg-slate-800 text-slate-300"
-                    }`}>
-                      {draft.is_active ? "Active" : "Archived"}
                     </div>
                   </div>
 
@@ -651,20 +639,6 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
                         className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
                         placeholder="Opening balance"
                       />
-                      <button
-                        onClick={() =>
-                          setBoyDrafts((current) => ({
-                            ...current,
-                            [boy.id]: {
-                              ...draft,
-                              is_active: !draft.is_active,
-                            },
-                          }))
-                        }
-                        className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:border-slate-500"
-                      >
-                        {draft.is_active ? "Mark Archived" : "Mark Active"}
-                      </button>
                     </div>
                   </div>
 

@@ -1,11 +1,11 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Q
+from django.db.models import DecimalField, Q, Sum, Value
 from django.db.models.deletion import ProtectedError
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,9 +16,17 @@ from .serializers import AccountSerializer, AccountWriteSerializer
 from .services import record_credit, record_debit
 from .utils import get_cash_drawer
 from orders.models import Order, OrderPayment
+from orders.services import collect_payment
 
 ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah"
 UNDO_REFERENCE_PREFIX = "UNDO-ENTRY-"
+ACTIVE_DELIVERY_ACCEPTANCE_STATUSES = {"NOT_REQUIRED", "ACCEPTED"}
+VENDOR_ENTRY_REFERENCES = {
+    "VENDOR-DUE",
+    "VENDOR-PAY",
+    "VENDOR-ADJUST-UP",
+    "VENDOR-ADJUST-DOWN",
+}
 
 
 def _extract_error_message(error_payload, fallback="Request failed."):
@@ -70,9 +78,50 @@ def _detach_account_from_orders(account):
 def _vendor_entry_can_be_undone(entry):
     return (
         entry.ledger_account.account_type == "VENDOR"
-        and entry.reference in {"VENDOR-DUE", "VENDOR-PAY"}
+        and entry.reference in VENDOR_ENTRY_REFERENCES
         and not LedgerEntry.objects.filter(reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}").exists()
     )
+
+
+def _delivery_reference_rollups(account, references):
+    rollups = {
+        reference: {
+            "net_balance": Decimal("0.00"),
+            "collected_amount": Decimal("0.00"),
+            "has_entries": False,
+        }
+        for reference in references
+    }
+
+    if not account or not references:
+        return rollups
+
+    entries = LedgerEntry.objects.filter(
+        ledger_account=account,
+        reference__in=references,
+    ).only("reference", "entry_type", "payment_type", "amount")
+
+    for entry in entries:
+        reference_data = rollups.setdefault(
+            entry.reference,
+            {
+                "net_balance": Decimal("0.00"),
+                "collected_amount": Decimal("0.00"),
+                "has_entries": False,
+            },
+        )
+        amount = Decimal(str(entry.amount))
+        reference_data["has_entries"] = True
+
+        if entry.entry_type == "CREDIT":
+            reference_data["net_balance"] += amount
+
+            if entry.payment_type in {"CASH", "ONLINE"}:
+                reference_data["collected_amount"] += amount
+        else:
+            reference_data["net_balance"] -= amount
+
+    return rollups
 
 
 def _sync_customer_collection_to_orders(account, amount, payment_type):
@@ -230,7 +279,22 @@ class AccountDetailAPIView(APIView):
 
     def get(self, request, account_id):
         account = get_object_or_404(LedgerAccount, id=account_id)
-        return Response(account_ledger_report(account.id))
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        parsed_start_date = parse_date(start_date) if start_date else None
+        parsed_end_date = parse_date(end_date) if end_date else None
+
+        if start_date and not parsed_start_date:
+            return Response({"error": "Enter a valid start date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if end_date and not parsed_end_date:
+            return Response({"error": "Enter a valid end date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+            return Response({"error": "Start date cannot be after end date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(account_ledger_report(account.id, parsed_start_date, parsed_end_date))
 
     def patch(self, request, account_id):
         account = get_object_or_404(LedgerAccount, id=account_id)
@@ -426,10 +490,7 @@ class DailyReportAPIView(APIView):
 class DeliveryBoysAPIView(APIView):
 
     def get(self, request):
-        boys = LedgerAccount.objects.filter(account_type="DELIVERY", is_active=True).order_by("name")
-
-        if not boys.exists():
-            boys = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("name")
+        boys = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("name", "id")
 
         data = [
             {
@@ -443,10 +504,282 @@ class DeliveryBoysAPIView(APIView):
         return Response(data)
 
 
+class DeliveryBoyLedgerAPIView(APIView):
+
+    def get(self, request, account_id):
+        delivery_boy = get_object_or_404(LedgerAccount, id=account_id, account_type="DELIVERY")
+        from_date = request.query_params.get("from_date")
+        to_date = request.query_params.get("to_date")
+
+        parsed_from_date = parse_date(from_date) if from_date else None
+        parsed_to_date = parse_date(to_date) if to_date else None
+
+        if from_date and not parsed_from_date:
+            return Response({"error": "Enter a valid from date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if to_date and not parsed_to_date:
+            return Response({"error": "Enter a valid to date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if parsed_from_date and parsed_to_date and parsed_from_date > parsed_to_date:
+            return Response({"error": "From date cannot be after to date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        orders_queryset = (
+            Order.objects.filter(
+                delivery_boy=delivery_boy,
+                acceptance_status__in=ACTIVE_DELIVERY_ACCEPTANCE_STATUSES,
+            )
+            .exclude(order_status="CANCELLED")
+            .annotate(
+                amount_paid=Coalesce(
+                    Sum("payments__amount"),
+                    Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                )
+            )
+            .select_related("customer_account")
+            .order_by("-created_at", "-id")
+        )
+
+        if parsed_from_date:
+            orders_queryset = orders_queryset.filter(created_at__date__gte=parsed_from_date)
+
+        if parsed_to_date:
+            orders_queryset = orders_queryset.filter(created_at__date__lte=parsed_to_date)
+
+        orders = list(orders_queryset)
+        references = [f"ORDER-{order.id}" for order in orders]
+        reference_rollups = _delivery_reference_rollups(delivery_boy, references)
+
+        total_order_value = Decimal("0.00")
+        total_to_collect = Decimal("0.00")
+        collected_so_far = Decimal("0.00")
+        pending_balance = Decimal("0.00")
+        moved_to_customer_total = Decimal("0.00")
+        direct_paid_total = Decimal("0.00")
+        collectible_order_count = 0
+        rows = []
+
+        for order in orders:
+            reference = f"ORDER-{order.id}"
+            rollup = reference_rollups.get(reference, {})
+            net_balance = Decimal(str(rollup.get("net_balance", "0.00")))
+            collected_amount = Decimal(str(rollup.get("collected_amount", "0.00")))
+            pending_from_rider = abs(net_balance) if net_balance < 0 else Decimal("0.00")
+            amount_paid = Decimal(str(order.amount_paid or "0.00"))
+            remaining_amount = Decimal(str(order.total_amount)) - amount_paid
+
+            if remaining_amount < 0:
+                remaining_amount = Decimal("0.00")
+
+            if pending_from_rider > 0:
+                settlement_status = "PENDING_WITH_RIDER"
+            elif order.customer_account_id and order.payment_status != "PAID":
+                settlement_status = "MOVED_TO_CUSTOMER_LEDGER"
+            elif order.payment_status == "PAID" and rollup.get("has_entries"):
+                settlement_status = "COLLECTED_FROM_RIDER"
+            elif order.payment_status == "PAID":
+                settlement_status = "DIRECT_PAID"
+            else:
+                settlement_status = "NO_RIDER_BALANCE"
+
+            can_collect_from_rider = (
+                pending_from_rider > 0
+                and order.payment_status != "PAID"
+                and not order.customer_account_id
+            )
+
+            total_order_value += Decimal(str(order.total_amount or "0.00"))
+            total_to_collect += collected_amount + pending_from_rider
+            collected_so_far += collected_amount
+            pending_balance += pending_from_rider
+
+            if settlement_status == "MOVED_TO_CUSTOMER_LEDGER":
+                moved_to_customer_total += remaining_amount
+
+            if settlement_status == "DIRECT_PAID":
+                direct_paid_total += Decimal(str(order.total_amount or "0.00"))
+
+            if can_collect_from_rider:
+                collectible_order_count += 1
+
+            rows.append(
+                {
+                    "id": order.id,
+                    "order_type": order.order_type,
+                    "order_status": order.order_status,
+                    "payment_status": order.payment_status,
+                    "created_at": order.created_at,
+                    "total_amount": order.total_amount,
+                    "amount_paid": amount_paid,
+                    "remaining_amount": remaining_amount,
+                    "customer_account_id": order.customer_account_id,
+                    "customer_account_name": order.customer_account.name if order.customer_account else None,
+                    "delivery_reference_balance": net_balance,
+                    "collected_from_rider": collected_amount,
+                    "pending_from_rider": pending_from_rider,
+                    "settlement_status": settlement_status,
+                    "can_collect_from_rider": can_collect_from_rider,
+                }
+            )
+
+        return Response(
+            {
+                "delivery_boy": {
+                    "id": delivery_boy.id,
+                    "name": delivery_boy.name,
+                    "contact_number": delivery_boy.contact_number,
+                    "address": delivery_boy.address,
+                    "balance": delivery_boy.balance,
+                },
+                "filters": {
+                    "from_date": parsed_from_date,
+                    "to_date": parsed_to_date,
+                },
+                "summary": {
+                    "orders_count": len(rows),
+                    "collectible_order_count": collectible_order_count,
+                    "total_order_value": total_order_value,
+                    "total_to_collect": total_to_collect,
+                    "collected_so_far": collected_so_far,
+                    "pending_balance": pending_balance,
+                    "moved_to_customer_total": moved_to_customer_total,
+                    "direct_paid_total": direct_paid_total,
+                },
+                "orders": rows,
+            }
+        )
+
+
+class DeliveryBoyBulkCollectAPIView(APIView):
+
+    @transaction.atomic
+    def post(self, request, account_id):
+        delivery_boy = get_object_or_404(LedgerAccount, id=account_id, account_type="DELIVERY")
+        from_date = request.data.get("from_date")
+        to_date = request.data.get("to_date")
+        payment_type = str(request.data.get("payment_type") or "").upper()
+
+        parsed_from_date = parse_date(from_date) if from_date else None
+        parsed_to_date = parse_date(to_date) if to_date else None
+
+        if not parsed_from_date or not parsed_to_date:
+            return Response({"error": "Select a valid from and to date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if parsed_from_date > parsed_to_date:
+            return Response({"error": "From date cannot be after to date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if payment_type not in {"CASH", "ONLINE"}:
+            return Response({"error": "Select a valid payment type."}, status=status.HTTP_400_BAD_REQUEST)
+
+        orders = list(
+            Order.objects.filter(
+                delivery_boy=delivery_boy,
+                acceptance_status__in=ACTIVE_DELIVERY_ACCEPTANCE_STATUSES,
+                created_at__date__gte=parsed_from_date,
+                created_at__date__lte=parsed_to_date,
+            )
+            .exclude(order_status="CANCELLED")
+            .annotate(
+                amount_paid=Coalesce(
+                    Sum("payments__amount"),
+                    Value(Decimal("0.00")),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                )
+            )
+            .order_by("created_at", "id")
+        )
+
+        references = [f"ORDER-{order.id}" for order in orders]
+        reference_rollups = _delivery_reference_rollups(delivery_boy, references)
+
+        collected_orders = []
+        skipped_orders = []
+        total_collected_amount = Decimal("0.00")
+
+        for order in orders:
+            reference = f"ORDER-{order.id}"
+            rollup = reference_rollups.get(reference, {})
+            net_balance = Decimal(str(rollup.get("net_balance", "0.00")))
+            pending_from_rider = abs(net_balance) if net_balance < 0 else Decimal("0.00")
+            amount_paid = Decimal(str(order.amount_paid or "0.00"))
+            remaining_amount = Decimal(str(order.total_amount)) - amount_paid
+
+            if remaining_amount < 0:
+                remaining_amount = Decimal("0.00")
+
+            if pending_from_rider <= 0:
+                if order.customer_account_id and order.payment_status != "PAID":
+                    skipped_orders.append(
+                        {
+                            "id": order.id,
+                            "reason": "This order was already moved to customer ledger.",
+                        }
+                    )
+                elif order.payment_status == "PAID":
+                    skipped_orders.append(
+                        {
+                            "id": order.id,
+                            "reason": "This order is already settled.",
+                        }
+                    )
+                else:
+                    skipped_orders.append(
+                        {
+                            "id": order.id,
+                            "reason": "No rider balance remains on this order.",
+                        }
+                    )
+                continue
+
+            if remaining_amount != pending_from_rider:
+                skipped_orders.append(
+                    {
+                        "id": order.id,
+                        "reason": "Rider balance does not match the remaining order amount.",
+                    }
+                )
+                continue
+
+            try:
+                collect_payment(order, pending_from_rider, payment_type)
+            except ValueError as exc:
+                skipped_orders.append(
+                    {
+                        "id": order.id,
+                        "reason": str(exc),
+                    }
+                )
+                continue
+
+            collected_orders.append(
+                {
+                    "id": order.id,
+                    "amount": pending_from_rider,
+                }
+            )
+            total_collected_amount += pending_from_rider
+
+        return Response(
+            {
+                "success": True,
+                "delivery_boy_id": delivery_boy.id,
+                "delivery_boy_name": delivery_boy.name,
+                "summary": {
+                    "collected_count": len(collected_orders),
+                    "skipped_count": len(skipped_orders),
+                    "total_collected_amount": total_collected_amount,
+                    "payment_type": payment_type,
+                },
+                "collected_orders": collected_orders,
+                "skipped_orders": skipped_orders,
+            }
+        )
+
+
 class LedgerEntriesAPIView(APIView):
 
     def get(self, request):
-        queryset = LedgerEntry.objects.select_related("ledger_account").order_by("-created_at", "-id")
+        queryset = LedgerEntry.objects.select_related("ledger_account", "created_by").order_by("-created_at", "-id")
 
         account_id = request.query_params.get("account_id")
         account_type = request.query_params.get("account_type")
@@ -469,14 +802,29 @@ class LedgerEntriesAPIView(APIView):
             queryset = queryset.filter(payment_type=payment_type)
 
         if start_date:
-            queryset = queryset.filter(created_at__date__gte=start_date)
+            parsed_start_date = parse_date(start_date)
+            if not parsed_start_date:
+                return Response({"error": "Enter a valid start date."}, status=status.HTTP_400_BAD_REQUEST)
+
+            queryset = queryset.filter(
+                Q(entry_date__gte=parsed_start_date)
+                | Q(entry_date__isnull=True, created_at__date__gte=parsed_start_date)
+            )
 
         if end_date:
-            queryset = queryset.filter(created_at__date__lte=end_date)
+            parsed_end_date = parse_date(end_date)
+            if not parsed_end_date:
+                return Response({"error": "Enter a valid end date."}, status=status.HTTP_400_BAD_REQUEST)
+
+            queryset = queryset.filter(
+                Q(entry_date__lte=parsed_end_date)
+                | Q(entry_date__isnull=True, created_at__date__lte=parsed_end_date)
+            )
 
         if search:
             queryset = queryset.filter(
                 Q(reference__icontains=search)
+                | Q(document_number__icontains=search)
                 | Q(description__icontains=search)
                 | Q(ledger_account__name__icontains=search)
             )
@@ -496,11 +844,30 @@ class LedgerEntriesAPIView(APIView):
                 "payment_type": entry.payment_type,
                 "amount": entry.amount,
                 "reference": entry.reference,
+                "action_label": (
+                    "Invoice Recorded"
+                    if entry.reference == "VENDOR-DUE"
+                    else "Payment Issued"
+                    if entry.reference == "VENDOR-PAY"
+                    else "Balance Correction (Increase)"
+                    if entry.reference == "VENDOR-ADJUST-UP"
+                    else "Balance Correction (Decrease)"
+                    if entry.reference == "VENDOR-ADJUST-DOWN"
+                    else "Reversal Entry"
+                    if str(entry.reference or "").startswith(UNDO_REFERENCE_PREFIX)
+                    else entry.entry_type
+                ),
+                "document_number": entry.document_number,
                 "description": entry.description,
                 "date": entry.created_at,
+                "entry_date": entry.entry_date or entry.created_at.date(),
+                "created_by_name": (
+                    entry.created_by.get_full_name().strip() or entry.created_by.username
+                    if entry.created_by else None
+                ),
                 "can_undo": (
                     entry.ledger_account.account_type == "VENDOR"
-                    and entry.reference in {"VENDOR-DUE", "VENDOR-PAY"}
+                    and entry.reference in VENDOR_ENTRY_REFERENCES
                     and f"{UNDO_REFERENCE_PREFIX}{entry.id}" not in undone_references
                 ),
             }
@@ -590,6 +957,8 @@ class VendorLedgerEntryAPIView(APIView):
         amount = request.data.get("amount")
         payment_type = str(request.data.get("payment_type") or "CASH").upper()
         note = str(request.data.get("note") or "").strip()
+        document_number = str(request.data.get("document_number") or "").strip() or None
+        entry_date = request.data.get("entry_date")
 
         if not account_id or amount in (None, ""):
             return Response({"error": "Vendor account and amount are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -604,11 +973,21 @@ class VendorLedgerEntryAPIView(APIView):
         if amount <= 0:
             return Response({"error": "Amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if mode not in {"OWE", "PAY"}:
+        if mode not in {"OWE", "PAY", "ADJUST_UP", "ADJUST_DOWN"}:
             return Response({"error": "Select a valid vendor action."}, status=status.HTTP_400_BAD_REQUEST)
 
         if mode == "PAY" and payment_type not in {"CASH", "ONLINE"}:
             return Response({"error": "Vendor payment must be cash or online."}, status=status.HTTP_400_BAD_REQUEST)
+
+        parsed_entry_date = parse_date(entry_date) if entry_date else None
+        if entry_date and not parsed_entry_date:
+            return Response({"error": "Enter a valid statement date."}, status=status.HTTP_400_BAD_REQUEST)
+
+        entry_defaults = {
+            "entry_date": parsed_entry_date,
+            "document_number": document_number,
+            "created_by": request.user if getattr(request, "user", None) and request.user.is_authenticated else None,
+        }
 
         if mode == "OWE":
             record_credit(
@@ -617,8 +996,9 @@ class VendorLedgerEntryAPIView(APIView):
                 payment_type="SYSTEM",
                 reference="VENDOR-DUE",
                 description=note or "Vendor due recorded",
+                **entry_defaults,
             )
-        else:
+        elif mode == "PAY":
             cash = get_cash_drawer()
             record_debit(
                 account=vendor,
@@ -626,6 +1006,7 @@ class VendorLedgerEntryAPIView(APIView):
                 payment_type=payment_type,
                 reference="VENDOR-PAY",
                 description=note or "Vendor payment recorded",
+                **entry_defaults,
             )
             record_debit(
                 account=cash,
@@ -633,6 +1014,25 @@ class VendorLedgerEntryAPIView(APIView):
                 payment_type=payment_type,
                 reference=f"VENDOR-PAY-{vendor.id}",
                 description=f"Vendor payment made to {vendor.name}",
+                **entry_defaults,
+            )
+        elif mode == "ADJUST_UP":
+            record_credit(
+                account=vendor,
+                amount=amount,
+                payment_type="SYSTEM",
+                reference="VENDOR-ADJUST-UP",
+                description=note or "Vendor balance increased manually",
+                **entry_defaults,
+            )
+        else:
+            record_debit(
+                account=vendor,
+                amount=amount,
+                payment_type="SYSTEM",
+                reference="VENDOR-ADJUST-DOWN",
+                description=note or "Vendor balance decreased manually",
+                **entry_defaults,
             )
 
         vendor.refresh_from_db()
@@ -644,6 +1044,8 @@ class VendorLedgerEntryAPIView(APIView):
                 "account_name": vendor.name,
                 "mode": mode,
                 "amount": amount,
+                "document_number": document_number,
+                "entry_date": parsed_entry_date,
                 "current_balance": vendor.balance,
             },
             status=status.HTTP_201_CREATED,
@@ -662,7 +1064,7 @@ class LedgerEntryUndoAPIView(APIView):
         if entry.ledger_account.account_type != "VENDOR":
             return Response({"error": "Undo is only available for vendor ledger entries."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if entry.reference not in {"VENDOR-DUE", "VENDOR-PAY"}:
+        if entry.reference not in VENDOR_ENTRY_REFERENCES:
             return Response({"error": "This transaction cannot be undone from the vendor ledger."}, status=status.HTTP_400_BAD_REQUEST)
 
         if LedgerEntry.objects.filter(reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}").exists():
@@ -676,7 +1078,10 @@ class LedgerEntryUndoAPIView(APIView):
             entry_type=reverse_entry_type,
             payment_type=entry.payment_type,
             reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}",
+            document_number=entry.document_number,
+            entry_date=entry.entry_date,
             description=f"Undo for entry #{entry.id}: {entry.description or entry.reference or 'vendor transaction'}",
+            created_by=request.user if getattr(request, "user", None) and request.user.is_authenticated else None,
         )
 
         if entry.reference == "VENDOR-PAY":
@@ -686,6 +1091,9 @@ class LedgerEntryUndoAPIView(APIView):
                 payment_type=entry.payment_type,
                 reference=f"{UNDO_REFERENCE_PREFIX}{entry.id}",
                 description=f"Undo vendor payment for {entry.ledger_account.name}",
+                document_number=entry.document_number,
+                entry_date=entry.entry_date,
+                created_by=request.user if getattr(request, "user", None) and request.user.is_authenticated else None,
             )
 
         entry.ledger_account.refresh_from_db()

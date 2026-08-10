@@ -46,14 +46,9 @@ function normalizeDeliveryBoys(payload) {
 
   return [...payload]
     .filter((boy) => boy && boy.id && boy.name)
-    .sort((left, right) => {
-      const activeDelta = Number(Boolean(right.is_active)) - Number(Boolean(left.is_active));
-      if (activeDelta !== 0) {
-        return activeDelta;
-      }
-
-      return String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" });
-    });
+    .sort((left, right) =>
+      String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" })
+    );
 }
 
 function paymentBadge(status) {
@@ -193,6 +188,19 @@ function formatFullDateTime(value) {
   });
 }
 
+function toDateInputValue(value) {
+  if (!value) {
+    return today;
+  }
+
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
 function SectionCard({ title, subtitle, icon, children, className = "", dayTheme = false }) {
   return (
     <section className={`overflow-hidden rounded-3xl border ${
@@ -289,6 +297,7 @@ export default function ManageOrdersTab({
   compactMode = false,
   showExternalQueue = true,
   allowExternalDecisions = true,
+  onNavigate,
 }) {
   const inputStyle = `
     w-full bg-slate-800 p-2 rounded text-white
@@ -363,6 +372,22 @@ export default function ManageOrdersTab({
     window.setTimeout(() => {
       setShowCollectDeniedToast(false);
     }, 2200);
+  }
+
+  function openDeliveryLedgerForOrder(order) {
+    if (!order?.delivery_boy) {
+      alert("This delivery order does not have a delivery boy assigned.");
+      return;
+    }
+
+    onNavigate?.({
+      tab: "LEDGER",
+      type: "OPEN_DELIVERY_LEDGER",
+      deliveryBoyId: String(order.delivery_boy),
+      orderId: order.id,
+      fromDate: toDateInputValue(order.created_at),
+      toDate: toDateInputValue(order.created_at),
+    });
   }
 
   function toggleOrderHighlight(event, orderId) {
@@ -1658,16 +1683,20 @@ async function submitCollectPayment(){
 	                && order.order_status !== "CANCELLED"
 	                && !(order.order_status === "COMPLETED")
 	                && (
-	                <button
-	                  onClick={()=>{
-	                    if(!canCollectPayments){
-	                      showCollectDeniedMessage()
-	                      return
-	                    }
-	                    setSelectedOrder(order)
-	                    setCollectAmount(order.remaining_amount || order.total_amount)
-	                    setCollectMethod("CASH")
-	                    setCollectCashAmount("")
+		                <button
+		                  onClick={()=>{
+		                    if(!canCollectPayments){
+		                      showCollectDeniedMessage()
+		                      return
+		                    }
+		                    if (order.order_type === "DELIVERY") {
+		                      openDeliveryLedgerForOrder(order)
+		                      return
+		                    }
+		                    setSelectedOrder(order)
+		                    setCollectAmount(order.remaining_amount || order.total_amount)
+		                    setCollectMethod("CASH")
+		                    setCollectCashAmount("")
 	                    setCollectOnlineAmount("")
 	                    setShowCollectModal(true)
 	                  }}
@@ -1910,16 +1939,20 @@ async function submitCollectPayment(){
 	                && order.order_status !== "CANCELLED"
 	                && !(order.order_status === "COMPLETED")
 	                && (
-	                  <button
-	                    onClick={() => {
-	                      if (!canCollectPayments) {
-	                        showCollectDeniedMessage();
-	                        return;
-	                      }
-	                      setSelectedOrder(order);
-	                      setCollectAmount(order.remaining_amount || order.total_amount);
-	                      setCollectMethod("CASH");
-	                      setCollectCashAmount("");
+		                  <button
+		                    onClick={() => {
+		                      if (!canCollectPayments) {
+		                        showCollectDeniedMessage();
+		                        return;
+		                      }
+		                      if (order.order_type === "DELIVERY") {
+		                        openDeliveryLedgerForOrder(order);
+		                        return;
+		                      }
+		                      setSelectedOrder(order);
+		                      setCollectAmount(order.remaining_amount || order.total_amount);
+		                      setCollectMethod("CASH");
+		                      setCollectCashAmount("");
 	                      setCollectOnlineAmount("");
 	                      setShowCollectModal(true);
 	                    }}

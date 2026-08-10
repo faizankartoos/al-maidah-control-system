@@ -240,6 +240,7 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
   }, [user]);
 
   const [activeTab, setActiveTab] = useState(availableTabs[0]?.key || null);
+  const [navigationIntent, setNavigationIntent] = useState(null);
   const [pendingExternalCount, setPendingExternalCount] = useState(0);
   const [notificationQueue, setNotificationQueue] = useState([]);
   const [activeNotification, setActiveNotification] = useState(null);
@@ -367,6 +368,28 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
   const activeTabDefinition = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
   const ActiveComponent = activeTabDefinition?.component || null;
 
+  const handleNavigate = (intent) => {
+    if (!intent?.tab) {
+      return;
+    }
+
+    setNavigationIntent({
+      ...intent,
+      intentId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    });
+    setActiveTab(intent.tab);
+  };
+
+  const handleNavigationHandled = (intentId) => {
+    setNavigationIntent((current) => {
+      if (!current || current.intentId !== intentId) {
+        return current;
+      }
+
+      return null;
+    });
+  };
+
   return (
     <div
       className={`system-shell min-h-screen transition-colors duration-300 ${themeConfig.rootClass}`}
@@ -449,6 +472,9 @@ function AuthenticatedShell({ user, onLogout, onPreferenceChange, preferenceSavi
               externalRefreshKey={externalRefreshKey}
               onPreferenceChange={onPreferenceChange}
               preferenceSaving={preferenceSaving}
+              onNavigate={handleNavigate}
+              navigationIntent={navigationIntent}
+              onNavigationHandled={handleNavigationHandled}
             />
           ) : (
             <div className={`rounded-[22px] border border-dashed px-5 py-12 text-center text-sm ${

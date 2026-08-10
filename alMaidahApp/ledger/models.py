@@ -1,3 +1,4 @@
+from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import Sum
 
@@ -106,6 +107,25 @@ class LedgerEntry(models.Model):
         max_length=255,
         blank=True,
         null=True
+    )
+
+    entry_date = models.DateField(
+        blank=True,
+        null=True,
+    )
+
+    document_number = models.CharField(
+        max_length=120,
+        blank=True,
+        null=True,
+    )
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="created_ledger_entries",
+        blank=True,
+        null=True,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

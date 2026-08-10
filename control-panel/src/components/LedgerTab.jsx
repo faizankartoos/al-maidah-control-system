@@ -41,6 +41,8 @@ function createEmptyVendorEntryForm() {
     mode: "OWE",
     amount: "",
     payment_type: "CASH",
+    entry_date: today,
+    document_number: "",
     note: "",
   };
 }
@@ -67,6 +69,22 @@ function formatDateTime(value) {
   });
 }
 
+function formatDate(value) {
+  if (!value) {
+    return "-";
+  }
+
+  const normalized = typeof value === "string" && value.length <= 10
+    ? `${value}T00:00:00`
+    : value;
+
+  return new Date(normalized).toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function formatReceiptDateTime(value) {
   if (!value) {
     return "-";
@@ -90,6 +108,88 @@ function orderTypeLabel(orderType) {
   if (orderType === "TAKEAWAY") return "Takeaway";
   if (orderType === "DELIVERY") return "Delivery";
   return orderType || "-";
+}
+
+function vendorActionLabel(entry) {
+  if (entry?.action_label) {
+    return entry.action_label;
+  }
+
+  if (entry?.reference === "VENDOR-DUE") return "Invoice Recorded";
+  if (entry?.reference === "VENDOR-PAY") return "Payment Issued";
+  if (entry?.reference === "VENDOR-ADJUST-UP") return "Balance Correction (Increase)";
+  if (entry?.reference === "VENDOR-ADJUST-DOWN") return "Balance Correction (Decrease)";
+  if ((entry?.reference || "").startsWith("UNDO-ENTRY-")) return "Reversal Entry";
+
+  return entry?.entry_type || "-";
+}
+
+function deliverySettlementMeta(status) {
+  if (status === "PENDING_WITH_RIDER") {
+    return {
+      label: "Pending With Rider",
+      tone: "border-amber-500/30 bg-amber-500/10 text-amber-100",
+      helper: "Collect from rider",
+    };
+  }
+
+  if (status === "COLLECTED_FROM_RIDER") {
+    return {
+      label: "Collected",
+      tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+      helper: "Money returned",
+    };
+  }
+
+  if (status === "MOVED_TO_CUSTOMER_LEDGER") {
+    return {
+      label: "Customer Ledger",
+      tone: "border-sky-500/30 bg-sky-500/10 text-sky-100",
+      helper: "Rider cleared, customer owes",
+    };
+  }
+
+  if (status === "DIRECT_PAID") {
+    return {
+      label: "Paid Directly",
+      tone: "border-violet-500/30 bg-violet-500/10 text-violet-100",
+      helper: "No rider collection",
+    };
+  }
+
+  return {
+    label: "No Rider Balance",
+    tone: "border-slate-700 bg-slate-900/80 text-slate-200",
+    helper: "Nothing to collect",
+  };
+}
+
+function formatStatementRange(filters) {
+  const startDate = filters?.start_date;
+  const endDate = filters?.end_date;
+
+  if (startDate && endDate) {
+    return `${formatDate(startDate)} to ${formatDate(endDate)}`;
+  }
+
+  if (startDate) {
+    return `From ${formatDate(startDate)}`;
+  }
+
+  if (endDate) {
+    return `Up to ${formatDate(endDate)}`;
+  }
+
+  return "Full history";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function ledgerOrderHighlight(order) {
@@ -194,6 +294,16 @@ function balanceTone(accountType, balance) {
 
   if (accountType === "DELIVERY") {
     return amount < 0 ? "text-rose-200" : "text-emerald-200";
+  }
+
+  if (accountType === "VENDOR") {
+    if (amount > 0) {
+      return "text-amber-200";
+    }
+
+    if (amount < 0) {
+      return "text-emerald-200";
+    }
   }
 
   return "text-slate-200";
@@ -722,11 +832,14 @@ function AccountDetailModal({ report, onClose, onViewOrder }) {
               <table className="min-w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.18em] text-slate-500">
                   <tr>
-                    <th className="pb-3 pr-4">Date</th>
+                    <th className="pb-3 pr-4">Statement Date</th>
+                    <th className="pb-3 pr-4">Logged</th>
                     <th className="pb-3 pr-4">Type</th>
                     <th className="pb-3 pr-4">Payment</th>
                     <th className="pb-3 pr-4">Amount</th>
                     <th className="pb-3 pr-4">Reference</th>
+                    <th className="pb-3 pr-4">Document</th>
+                    <th className="pb-3 pr-4">By</th>
                     <th className="pb-3 pr-4">Description</th>
                     <th className="pb-3">Running</th>
                   </tr>
@@ -735,11 +848,14 @@ function AccountDetailModal({ report, onClose, onViewOrder }) {
                   {report.transactions.length ? (
                     report.transactions.map((entry) => (
                       <tr key={entry.id} className="border-t border-slate-800 align-top">
-                        <td className="py-3 pr-4 text-slate-300">{formatDateTime(entry.date)}</td>
-                        <td className="py-3 pr-4 text-slate-200">{entry.entry_type}</td>
+                        <td className="py-3 pr-4 text-slate-300">{formatDate(entry.entry_date)}</td>
+                        <td className="py-3 pr-4 text-slate-400">{formatDateTime(entry.date)}</td>
+                        <td className="py-3 pr-4 text-slate-200">{vendorActionLabel(entry)}</td>
                         <td className="py-3 pr-4 text-slate-200">{entry.payment_type}</td>
                         <td className="py-3 pr-4 font-semibold text-white">{formatCurrency(entry.amount)}</td>
                         <td className="py-3 pr-4 text-slate-400">{entry.reference || "-"}</td>
+                        <td className="py-3 pr-4 text-slate-400">{entry.document_number || "-"}</td>
+                        <td className="py-3 pr-4 text-slate-400">{entry.created_by_name || "-"}</td>
                         <td className="py-3 pr-4 text-slate-400">{entry.description || "-"}</td>
                         <td className="py-3 font-semibold text-emerald-200">
                           {formatCurrency(entry.running_balance)}
@@ -748,7 +864,7 @@ function AccountDetailModal({ report, onClose, onViewOrder }) {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan="7" className="py-10 text-center text-slate-500">
+                      <td colSpan="10" className="py-10 text-center text-slate-500">
                         No transactions for this account yet.
                       </td>
                     </tr>
@@ -763,12 +879,13 @@ function AccountDetailModal({ report, onClose, onViewOrder }) {
   );
 }
 
-export default function LedgerTab() {
+export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   const [activeTab, setActiveTab] = useState("ACCOUNTS");
 
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [dailyReport, setDailyReport] = useState(null);
+  const [deliveryBoyDirectory, setDeliveryBoyDirectory] = useState([]);
 
   const [accountFilters, setAccountFilters] = useState({
     search: "",
@@ -815,11 +932,24 @@ export default function LedgerTab() {
   const [vendorEntryForm, setVendorEntryForm] = useState(createEmptyVendorEntryForm);
   const [selectedVendorId, setSelectedVendorId] = useState("");
   const [vendorReport, setVendorReport] = useState(null);
+  const [vendorStatementFilters, setVendorStatementFilters] = useState({
+    start_date: "",
+    end_date: "",
+  });
+  const [selectedDeliveryLedgerBoyId, setSelectedDeliveryLedgerBoyId] = useState("");
+  const [deliveryLedgerFilters, setDeliveryLedgerFilters] = useState({
+    from_date: today,
+    to_date: today,
+    payment_type: "CASH",
+  });
+  const [deliveryLedgerReport, setDeliveryLedgerReport] = useState(null);
+  const [highlightedDeliveryLedgerOrderId, setHighlightedDeliveryLedgerOrderId] = useState(null);
 
   const [accountReport, setAccountReport] = useState(null);
   const [viewingOrder, setViewingOrder] = useState(null);
 
   const [loadingAccounts, setLoadingAccounts] = useState(false);
+  const [loadingDeliveryBoys, setLoadingDeliveryBoys] = useState(false);
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [loadingDailyReport, setLoadingDailyReport] = useState(false);
   const [savingAccount, setSavingAccount] = useState(false);
@@ -827,6 +957,8 @@ export default function LedgerTab() {
   const [collectLoading, setCollectLoading] = useState(false);
   const [loadingAccountReport, setLoadingAccountReport] = useState(false);
   const [loadingVendorReport, setLoadingVendorReport] = useState(false);
+  const [loadingDeliveryLedger, setLoadingDeliveryLedger] = useState(false);
+  const [collectingDeliveryLedger, setCollectingDeliveryLedger] = useState(false);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -868,6 +1000,16 @@ export default function LedgerTab() {
     }
   };
 
+  const loadDeliveryBoys = async () => {
+    setLoadingDeliveryBoys(true);
+    try {
+      const response = await api.get("/ledger/delivery-boys/");
+      setDeliveryBoyDirectory(Array.isArray(response.data) ? response.data : []);
+    } finally {
+      setLoadingDeliveryBoys(false);
+    }
+  };
+
   const loadDailyReport = async (date = dailyDate) => {
     setLoadingDailyReport(true);
     try {
@@ -883,6 +1025,7 @@ export default function LedgerTab() {
   const refreshAll = async () => {
     await Promise.all([
       loadAccounts(),
+      loadDeliveryBoys(),
       loadTransactions(transactionFilters),
       loadDailyReport(dailyDate),
     ]);
@@ -906,6 +1049,26 @@ export default function LedgerTab() {
       setError(getErrorMessage(requestError, "Ledger accounts failed to refresh."));
     });
   }, [accountFilters.show_inactive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedDeliveryLedgerBoyId) {
+      return;
+    }
+
+    if (loadingDeliveryBoys || !deliveryBoyDirectory.length) {
+      return;
+    }
+
+    const stillExists = deliveryBoyDirectory.some(
+      (account) => String(account.id) === String(selectedDeliveryLedgerBoyId),
+    );
+
+    if (!stillExists) {
+      setSelectedDeliveryLedgerBoyId("");
+      setDeliveryLedgerReport(null);
+      setHighlightedDeliveryLedgerOrderId(null);
+    }
+  }, [selectedDeliveryLedgerBoyId, deliveryBoyDirectory, loadingDeliveryBoys]);
 
   const filteredAccounts = useMemo(() => {
     return accounts
@@ -984,6 +1147,31 @@ export default function LedgerTab() {
     [accounts],
   );
 
+  const deliveryLedgerSummaryCards = deliveryLedgerReport
+    ? [
+        {
+          label: "Orders In Range",
+          value: deliveryLedgerReport.summary.orders_count,
+          tone: "text-white",
+        },
+        {
+          label: "Collectible Orders",
+          value: deliveryLedgerReport.summary.collectible_order_count,
+          tone: "text-amber-200",
+        },
+        {
+          label: "Collected So Far",
+          value: formatCurrency(deliveryLedgerReport.summary.collected_so_far),
+          tone: "text-emerald-200",
+        },
+        {
+          label: "Pending Balance",
+          value: formatCurrency(deliveryLedgerReport.summary.pending_balance),
+          tone: "text-rose-200",
+        },
+      ]
+    : [];
+
   useEffect(() => {
     if (!selectedVendorId) {
       return;
@@ -1032,6 +1220,7 @@ export default function LedgerTab() {
 
   const tabConfig = [
     { key: "ACCOUNTS", label: "Accounts" },
+    { key: "DELIVERY_LEDGER", label: "Delivery Ledger" },
     { key: "VENDOR_LEDGER", label: "Vendor Ledger" },
     { key: "TRANSACTIONS", label: "Transactions" },
     { key: "REPORT", label: "Daily Report" },
@@ -1315,6 +1504,12 @@ export default function LedgerTab() {
     try {
       const response = await api.get(`/accounts/${account.id}/`);
       const report = response.data;
+
+      if (report.account.account_type === "VENDOR") {
+        openVendorStatementWindow(report);
+        return;
+      }
+
       const win = window.open("", "", "width=420,height=640");
 
       if (!win) {
@@ -1513,7 +1708,120 @@ export default function LedgerTab() {
     }
   };
 
-  const loadVendorReport = async (accountId) => {
+  const loadDeliveryLedger = async (accountId, filters = deliveryLedgerFilters) => {
+    if (!accountId) {
+      setDeliveryLedgerReport(null);
+      return;
+    }
+
+    setLoadingDeliveryLedger(true);
+    try {
+      const response = await api.get(`/ledger/delivery-boys/${accountId}/summary/`, {
+        params: buildParams(filters),
+      });
+      setDeliveryLedgerReport(response.data);
+    } finally {
+      setLoadingDeliveryLedger(false);
+    }
+  };
+
+  const handleSelectDeliveryLedgerBoy = async (accountId) => {
+    setSelectedDeliveryLedgerBoyId(accountId);
+    setHighlightedDeliveryLedgerOrderId(null);
+    setError("");
+    await loadDeliveryLedger(accountId, deliveryLedgerFilters);
+  };
+
+  const handleApplyDeliveryLedgerFilters = async () => {
+    if (!selectedDeliveryLedgerBoyId) {
+      setError("Choose a delivery boy first.");
+      return;
+    }
+
+    setError("");
+    await loadDeliveryLedger(selectedDeliveryLedgerBoyId, deliveryLedgerFilters);
+  };
+
+  const handleClearDeliveryLedgerFilters = async () => {
+    const nextFilters = {
+      from_date: today,
+      to_date: today,
+      payment_type: deliveryLedgerFilters.payment_type || "CASH",
+    };
+
+    setDeliveryLedgerFilters(nextFilters);
+    setHighlightedDeliveryLedgerOrderId(null);
+    setError("");
+
+    if (!selectedDeliveryLedgerBoyId) {
+      return;
+    }
+
+    await loadDeliveryLedger(selectedDeliveryLedgerBoyId, nextFilters);
+  };
+
+  const handleCollectDeliveryLedgerOrder = async (order) => {
+    if (!order?.can_collect_from_rider) {
+      return;
+    }
+
+    setCollectingDeliveryLedger(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const payload = {
+        amount: order.remaining_amount,
+        payment_type: deliveryLedgerFilters.payment_type,
+      };
+
+      if (deliveryLedgerFilters.payment_type === "CASH") {
+        payload.cash_amount = order.remaining_amount;
+      } else {
+        payload.online_amount = order.remaining_amount;
+      }
+
+      await api.post(`/orders/${order.id}/collect-payment/`, payload);
+      await refreshAll();
+      await loadDeliveryLedger(selectedDeliveryLedgerBoyId, deliveryLedgerFilters);
+      setSuccess(`Collected ${formatCurrency(order.remaining_amount)} from rider for Order #${order.id}.`);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to collect this rider order right now."));
+    } finally {
+      setCollectingDeliveryLedger(false);
+    }
+  };
+
+  const handleCollectAllDeliveryLedgerOrders = async () => {
+    if (!selectedDeliveryLedgerBoyId) {
+      setError("Choose a delivery boy first.");
+      return;
+    }
+
+    setCollectingDeliveryLedger(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const response = await api.post(
+        `/ledger/delivery-boys/${selectedDeliveryLedgerBoyId}/collect-all/`,
+        deliveryLedgerFilters,
+      );
+      await refreshAll();
+      await loadDeliveryLedger(selectedDeliveryLedgerBoyId, deliveryLedgerFilters);
+      setSuccess(
+        response.data?.summary?.collected_count
+          ? `Collected ${formatCurrency(response.data.summary.total_collected_amount)} from ${response.data.summary.collected_count} rider order(s).`
+          : "No rider orders needed collection for this range.",
+      );
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to collect the selected rider orders."));
+    } finally {
+      setCollectingDeliveryLedger(false);
+    }
+  };
+
+  const loadVendorReport = async (accountId, filters = vendorStatementFilters) => {
     if (!accountId) {
       setVendorReport(null);
       return;
@@ -1521,7 +1829,9 @@ export default function LedgerTab() {
 
     setLoadingVendorReport(true);
     try {
-      const response = await api.get(`/accounts/${accountId}/`);
+      const response = await api.get(`/accounts/${accountId}/`, {
+        params: buildParams(filters),
+      });
       setVendorReport(response.data);
     } finally {
       setLoadingVendorReport(false);
@@ -1535,7 +1845,7 @@ export default function LedgerTab() {
       account_id: accountId,
     }));
     setError("");
-    await loadVendorReport(accountId);
+    await loadVendorReport(accountId, vendorStatementFilters);
   };
 
   const handleSaveVendorEntry = async () => {
@@ -1558,10 +1868,11 @@ export default function LedgerTab() {
       setVendorEntryForm((current) => ({
         ...current,
         amount: "",
+        document_number: "",
         note: "",
       }));
       await refreshAll();
-      await loadVendorReport(vendorEntryForm.account_id);
+      await loadVendorReport(vendorEntryForm.account_id, vendorStatementFilters);
       setSuccess("Vendor ledger updated.");
     } catch (requestError) {
       setError(getErrorMessage(requestError, "Failed to save vendor ledger entry."));
@@ -1578,12 +1889,316 @@ export default function LedgerTab() {
       await api.post(`/ledger/entries/${entryId}/undo/`);
       await refreshAll();
       if (selectedVendorId) {
-        await loadVendorReport(selectedVendorId);
+        await loadVendorReport(selectedVendorId, vendorStatementFilters);
       }
       setSuccess("Vendor transaction undone with full audit trail.");
     } catch (requestError) {
       setError(getErrorMessage(requestError, "Unable to undo this vendor transaction."));
     }
+  };
+
+  const handleApplyVendorStatementFilters = async () => {
+    if (!selectedVendorId) {
+      setError("Choose a vendor first.");
+      return;
+    }
+
+    setError("");
+
+    try {
+      await loadVendorReport(selectedVendorId, vendorStatementFilters);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to load this vendor statement."));
+    }
+  };
+
+  const handleClearVendorStatementFilters = async () => {
+    if (!selectedVendorId) {
+      setVendorStatementFilters({
+        start_date: "",
+        end_date: "",
+      });
+      return;
+    }
+
+    const nextFilters = {
+      start_date: "",
+      end_date: "",
+    };
+
+    setVendorStatementFilters(nextFilters);
+    setError("");
+
+    try {
+      await loadVendorReport(selectedVendorId, nextFilters);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "Unable to reload the full vendor statement."));
+    }
+  };
+
+  const openVendorStatementWindow = (report) => {
+    const win = window.open("", "", "width=1080,height=860");
+
+    if (!win) {
+      alert("Unable to open print preview. Please allow pop-ups and try again.");
+      return;
+    }
+
+    const statementRange = formatStatementRange(report.filters);
+    const printableTransactions = (report.transactions || []).filter(
+      (entry) => !["VENDOR-ADJUST-UP", "VENDOR-ADJUST-DOWN"].includes(entry.reference),
+    );
+    const printableVendorTotals = printableTransactions.reduce(
+      (totals, entry) => {
+        const amount = Number(entry.amount || 0);
+
+        if (entry.reference === "VENDOR-DUE") {
+          totals.due_added += amount;
+        } else if (entry.reference === "VENDOR-PAY") {
+          totals.payments_made += amount;
+        }
+
+        return totals;
+      },
+      {
+        due_added: 0,
+        payments_made: 0,
+      },
+    );
+    const printedOpeningBalance = Number(report.summary.statement_opening_balance || 0);
+    const printedClosingBalance = printedOpeningBalance
+      + printableVendorTotals.due_added
+      - printableVendorTotals.payments_made;
+    const transactionRows = printableTransactions.length
+      ? printableTransactions
+          .map(
+            (entry) => `
+              <tr>
+                <td>${escapeHtml(formatDate(entry.entry_date))}</td>
+                <td>${escapeHtml(formatDateTime(entry.date))}</td>
+                <td>${escapeHtml(vendorActionLabel(entry))}</td>
+                <td>${escapeHtml(entry.document_number || "-")}</td>
+                <td>${escapeHtml(entry.payment_type || "-")}</td>
+                <td class="amount">${escapeHtml(formatCurrency(entry.amount))}</td>
+                <td class="amount">${escapeHtml(formatCurrency(entry.running_balance))}</td>
+                <td>${escapeHtml(entry.created_by_name || "-")}</td>
+                <td>${escapeHtml(entry.description || "-")}</td>
+              </tr>
+            `,
+          )
+          .join("")
+      : `
+        <tr>
+          <td colspan="9" class="empty">No transactions found for this statement range.</td>
+        </tr>
+      `;
+
+    win.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8" />
+        <title>Vendor Ledger Statement</title>
+        <style>
+          @page {
+            size: A4 portrait;
+            margin: 12mm;
+          }
+
+          body {
+            font-family: Arial, sans-serif;
+            color: #0f172a;
+            margin: 0;
+            font-size: 12px;
+          }
+
+          .header {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 12px;
+          }
+
+          .brand-title {
+            font-size: 24px;
+            font-weight: 700;
+          }
+
+          .brand-copy,
+          .meta-copy {
+            margin-top: 4px;
+            line-height: 1.5;
+          }
+
+          .meta {
+            text-align: right;
+          }
+
+          .section {
+            margin-top: 18px;
+          }
+
+          .section-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+          }
+
+          .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+          }
+
+          .summary-card {
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: #f8fafc;
+          }
+
+          .summary-label {
+            font-size: 10px;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+          }
+
+          .summary-value {
+            margin-top: 6px;
+            font-size: 16px;
+            font-weight: 700;
+          }
+
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+
+          th,
+          td {
+            border: 1px solid #cbd5e1;
+            padding: 8px;
+            vertical-align: top;
+          }
+
+          th {
+            background: #e2e8f0;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-align: left;
+          }
+
+          .amount {
+            text-align: right;
+            white-space: nowrap;
+            font-weight: 700;
+          }
+
+          .empty {
+            text-align: center;
+            color: #64748b;
+            padding: 16px;
+          }
+
+          .footer {
+            margin-top: 18px;
+            font-size: 11px;
+            color: #475569;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <div class="brand-title">Al-Maidah Cafe</div>
+            <div class="brand-copy">
+              Chadoora<br />
+              Phone: 7051333637<br />
+              Vendor ledger statement
+            </div>
+          </div>
+          <div class="meta">
+            <div class="brand-title" style="font-size: 20px;">${escapeHtml(report.account.name)}</div>
+            <div class="meta-copy">
+              ${escapeHtml(report.account.contact_number || "No phone")}<br />
+              ${escapeHtml(report.account.address || "No address")}<br />
+              Statement range: ${escapeHtml(statementRange)}<br />
+              Printed: ${escapeHtml(formatDateTime(new Date()))}
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Statement Summary</div>
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="summary-label">Opening Balance</div>
+              <div class="summary-value">${escapeHtml(formatCurrency(printedOpeningBalance))}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Closing Balance</div>
+              <div class="summary-value">${escapeHtml(formatCurrency(printedClosingBalance))}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Due Added</div>
+              <div class="summary-value">${escapeHtml(formatCurrency(printableVendorTotals.due_added))}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Payments Made</div>
+              <div class="summary-value">${escapeHtml(formatCurrency(printableVendorTotals.payments_made))}</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-label">Transactions</div>
+              <div class="summary-value">${escapeHtml(String(printableTransactions.length || 0))}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Detailed Transactions</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Statement Date</th>
+                <th>Logged At</th>
+                <th>Action</th>
+                <th>Document No.</th>
+                <th>Payment</th>
+                <th>Amount</th>
+                <th>Running Balance</th>
+                <th>Created By</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${transactionRows}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="footer">
+          This statement is system generated from the vendor ledger and can be used for internal reconciliation and vendor discussions.
+        </div>
+      </body>
+      </html>
+    `);
+
+    win.document.close();
+    win.focus();
+    win.onload = () => {
+      setTimeout(() => {
+        win.focus();
+        win.print();
+        win.onafterprint = () => {
+          win.close();
+        };
+      }, 250);
+    };
   };
 
   const viewOrder = async (orderId) => {
@@ -1596,6 +2211,53 @@ export default function LedgerTab() {
       setError(getErrorMessage(requestError, "Failed to load order details."));
     }
   };
+
+  useEffect(() => {
+    if (navigationIntent?.type !== "OPEN_DELIVERY_LEDGER") {
+      return;
+    }
+
+    const targetBoyId = String(navigationIntent.deliveryBoyId || "");
+    const nextFilters = {
+      from_date: navigationIntent.fromDate || today,
+      to_date: navigationIntent.toDate || navigationIntent.fromDate || today,
+      payment_type: deliveryLedgerFilters.payment_type || "CASH",
+    };
+
+    setActiveTab("DELIVERY_LEDGER");
+    setSelectedDeliveryLedgerBoyId(targetBoyId);
+    setDeliveryLedgerFilters(nextFilters);
+    setHighlightedDeliveryLedgerOrderId(navigationIntent.orderId || null);
+    setError("");
+
+    if (targetBoyId) {
+      loadDeliveryLedger(targetBoyId, nextFilters).catch((requestError) => {
+        setError(getErrorMessage(requestError, "Unable to open this delivery-boy ledger."));
+      });
+    }
+
+    if (navigationIntent.intentId) {
+      onNavigationHandled?.(navigationIntent.intentId);
+    }
+  }, [navigationIntent]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!highlightedDeliveryLedgerOrderId) {
+      return;
+    }
+
+    const match = deliveryLedgerReport?.orders?.some(
+      (order) => String(order.id) === String(highlightedDeliveryLedgerOrderId),
+    );
+
+    if (!match) {
+      setHighlightedDeliveryLedgerOrderId(null);
+      return;
+    }
+
+    const row = document.getElementById(`delivery-ledger-order-${highlightedDeliveryLedgerOrderId}`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightedDeliveryLedgerOrderId, deliveryLedgerReport]);
 
   return (
     <div className="space-y-6 text-white">
@@ -2083,6 +2745,341 @@ export default function LedgerTab() {
         </div>
       )}
 
+      {activeTab === "DELIVERY_LEDGER" && (
+        <div className="grid gap-6 xl:grid-cols-[0.82fr_1.18fr]">
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+              <div className="border-b border-slate-800 pb-4">
+                <div className="text-lg font-semibold text-white">Delivery Settlement Desk</div>
+                <div className="mt-1 text-sm text-slate-400">
+                  Open one rider, keep the order list lean, and collect only the orders that still need money returned to the restaurant.
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-4">
+                <div>
+                  <label className="mb-2 block text-sm text-slate-300">Delivery Boy</label>
+                  <select
+                    value={selectedDeliveryLedgerBoyId}
+                    onChange={(event) => {
+                      const nextId = event.target.value;
+                      setSelectedDeliveryLedgerBoyId(nextId);
+                      setHighlightedDeliveryLedgerOrderId(null);
+                    }}
+                    className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-500"
+                  >
+                    <option value="">
+                      {loadingDeliveryBoys ? "Loading delivery boys..." : "Choose delivery boy"}
+                    </option>
+                    {deliveryBoyDirectory.map((boy) => (
+                      <option key={boy.id} value={boy.id}>
+                        {boy.name}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 text-xs text-slate-500">
+                    Deleted riders disappear from this list entirely. Paid delivery orders still show here for tracking, but they stay non-collectible.
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">From Date</label>
+                    <input
+                      type="date"
+                      value={deliveryLedgerFilters.from_date}
+                      onChange={(event) =>
+                        setDeliveryLedgerFilters((current) => ({
+                          ...current,
+                          from_date: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">To Date</label>
+                    <input
+                      type="date"
+                      value={deliveryLedgerFilters.to_date}
+                      onChange={(event) =>
+                        setDeliveryLedgerFilters((current) => ({
+                          ...current,
+                          to_date: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm text-slate-300">Collection Mode</label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {["CASH", "ONLINE"].map((option) => {
+                      const selected = deliveryLedgerFilters.payment_type === option;
+
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() =>
+                            setDeliveryLedgerFilters((current) => ({
+                              ...current,
+                              payment_type: option,
+                            }))
+                          }
+                          className={`rounded-2xl border px-4 py-3 text-left transition ${
+                            selected
+                              ? "border-amber-400 bg-amber-500/10"
+                              : "border-slate-800 bg-slate-900/60 hover:border-slate-600"
+                          }`}
+                        >
+                          <div className="font-semibold text-white">{option}</div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            {option === "CASH" ? "Rider returns cash" : "Rider settles online"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <button
+                    onClick={() => handleSelectDeliveryLedgerBoy(selectedDeliveryLedgerBoyId)}
+                    disabled={!selectedDeliveryLedgerBoyId || loadingDeliveryLedger}
+                    className="flex-1 rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-amber-400/60"
+                  >
+                    {loadingDeliveryLedger ? "Loading..." : "Open Rider Orders"}
+                  </button>
+                  <button
+                    onClick={handleApplyDeliveryLedgerFilters}
+                    disabled={!selectedDeliveryLedgerBoyId || loadingDeliveryLedger}
+                    className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Apply Range
+                  </button>
+                  <button
+                    onClick={handleClearDeliveryLedgerFilters}
+                    className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                  >
+                    Today
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Delivery Boys</div>
+                <div className="mt-2 text-2xl font-semibold text-rose-200">{deliveryBoyDirectory.length}</div>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Selected Mode</div>
+                <div className="mt-2 text-2xl font-semibold text-white">{deliveryLedgerFilters.payment_type}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
+              <div className="flex flex-col gap-3 border-b border-slate-800 pb-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <div className="text-lg font-semibold text-white">Rider Order List</div>
+                  <div className="mt-1 text-sm text-slate-400">
+                    Minimal view by design: order number, type, total, view, and collect when collection is actually needed.
+                  </div>
+                </div>
+
+                {deliveryLedgerReport ? (
+                  <button
+                    onClick={handleCollectAllDeliveryLedgerOrders}
+                    disabled={
+                      collectingDeliveryLedger
+                      || !deliveryLedgerReport.summary.collectible_order_count
+                    }
+                    className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
+                  >
+                    <InlineButtonContent
+                      busy={collectingDeliveryLedger}
+                      busyLabel="Collecting..."
+                    >
+                      Collect All In Range
+                    </InlineButtonContent>
+                  </button>
+                ) : null}
+              </div>
+
+              {!selectedDeliveryLedgerBoyId ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  Choose a delivery boy on the left to open today’s delivery ledger.
+                </div>
+              ) : loadingDeliveryLedger ? (
+                <PanelLoader
+                  eyebrow="Delivery Ledger"
+                  label="Loading rider orders..."
+                  description="Pulling delivery orders, pending rider balances, direct-paid orders, and customer-ledger transfers."
+                />
+              ) : deliveryLedgerReport ? (
+                <>
+                  <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Delivery Boy</div>
+                        <div className="mt-2 text-xl font-semibold text-white">
+                          {deliveryLedgerReport.delivery_boy.name}
+                        </div>
+                        <div className="mt-2 text-sm text-slate-400">
+                          {deliveryLedgerReport.delivery_boy.contact_number || "No phone"} •{" "}
+                          {deliveryLedgerReport.delivery_boy.address || "No address"}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
+                        Range:{" "}
+                        <span className="font-semibold text-white">
+                          {formatDate(deliveryLedgerReport.filters.from_date)} to {formatDate(deliveryLedgerReport.filters.to_date)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {!!deliveryLedgerSummaryCards.length && (
+                    <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      {deliveryLedgerSummaryCards.map((card) => (
+                        <div
+                          key={card.label}
+                          className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"
+                        >
+                          <div className="text-xs uppercase tracking-[0.2em] text-slate-500">{card.label}</div>
+                          <div className={`mt-2 text-2xl font-semibold ${card.tone}`}>{card.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Total Order Value</div>
+                      <div className="mt-2 text-xl font-semibold text-white">
+                        {formatCurrency(deliveryLedgerReport.summary.total_order_value)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Moved To Customer Ledger</div>
+                      <div className="mt-2 text-xl font-semibold text-sky-200">
+                        {formatCurrency(deliveryLedgerReport.summary.moved_to_customer_total)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Paid Directly</div>
+                      <div className="mt-2 text-xl font-semibold text-violet-200">
+                        {formatCurrency(deliveryLedgerReport.summary.direct_paid_total)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/35">
+                    <div className="hidden items-center gap-3 border-b border-slate-800 bg-slate-950/70 px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 md:grid md:grid-cols-[1fr_0.85fr_0.9fr_1.15fr_auto_auto]">
+                      <div>Order</div>
+                      <div>Type</div>
+                      <div>Total</div>
+                      <div>Status</div>
+                      <div>View</div>
+                      <div>Collect</div>
+                    </div>
+                    {deliveryLedgerReport.orders.length ? (
+                      deliveryLedgerReport.orders.map((order) => {
+                        const settlement = deliverySettlementMeta(order.settlement_status);
+                        const highlighted = String(order.id) === String(highlightedDeliveryLedgerOrderId);
+
+                        return (
+                          <div
+                            key={order.id}
+                            id={`delivery-ledger-order-${order.id}`}
+                            className={`border-b border-slate-800 px-4 py-3 transition last:border-b-0 ${
+                              highlighted
+                                ? "bg-amber-500/10 shadow-[inset_3px_0_0_rgba(251,191,36,0.9)]"
+                                : "bg-transparent hover:bg-slate-900/45"
+                            }`}
+                          >
+                            <div className="grid gap-3 md:grid-cols-[1fr_0.85fr_0.9fr_1.15fr_auto_auto] md:items-center">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-base font-semibold text-white">Order #{order.id}</span>
+                                  {highlighted ? (
+                                    <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-100">
+                                      Highlighted
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {formatDateTime(order.created_at)}
+                                </div>
+                              </div>
+
+                              <div className="text-sm font-medium text-slate-200">
+                                {orderTypeLabel(order.order_type)}
+                              </div>
+
+                              <div className="text-sm font-semibold text-white">
+                                {formatCurrency(order.total_amount)}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] ${settlement.tone}`}>
+                                  {settlement.label}
+                                </div>
+                                <div className="mt-1 truncate text-xs text-slate-500">
+                                  Pending {formatCurrency(order.pending_from_rider)} • Collected {formatCurrency(order.collected_from_rider)}
+                                </div>
+                              </div>
+
+                              <div className="flex md:justify-end">
+                                <button
+                                  onClick={() => viewOrder(order.id)}
+                                  className="rounded-2xl border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                                >
+                                  View Order
+                                </button>
+                              </div>
+
+                              <div className="flex md:justify-end">
+                                {order.can_collect_from_rider ? (
+                                  <button
+                                    onClick={() => handleCollectDeliveryLedgerOrder(order)}
+                                    disabled={collectingDeliveryLedger}
+                                    className="rounded-2xl bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Collect
+                                  </button>
+                                ) : (
+                                  <div className="rounded-2xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm font-semibold text-slate-400">
+                                    No Collect
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="px-4 py-10 text-center text-sm text-slate-500">
+                        No delivery orders found for this rider and date range.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No rider ledger loaded yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === "TRANSACTIONS" && (
         <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
           <div className="flex flex-col gap-2 border-b border-slate-800 pb-4 md:flex-row md:items-end md:justify-between">
@@ -2303,12 +3300,12 @@ export default function LedgerTab() {
               <div className="border-b border-slate-800 pb-4">
                 <div className="text-lg font-semibold text-white">Vendor Ledger Workspace</div>
                 <div className="mt-1 text-sm text-slate-400">
-                  Simple Khatabook-style vendor handling for staff: pick a vendor, record what you owe, record what you paid, and undo a wrong entry without losing audit history.
+                  Use this for fast vendor entries during operations and for dispute-ready statements when a vendor needs a detailed balance trail.
                 </div>
               </div>
 
               <div className="mt-4 space-y-4">
-                <div className="flex justify-end">
+                <div className="flex flex-wrap justify-end gap-3">
                   <button
                     onClick={startVendorAccountCreate}
                     className="rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/20"
@@ -2340,8 +3337,10 @@ export default function LedgerTab() {
                     <label className="mb-2 block text-sm text-slate-300">Action</label>
                     <div className="grid gap-3 grid-cols-2">
                       {[
-                        { value: "OWE", label: "Vendor Gave Goods", hint: "Adds to what we owe" },
-                        { value: "PAY", label: "We Paid Vendor", hint: "Reduces vendor due" },
+                        { value: "OWE", label: "Invoice Recorded", hint: "Adds to vendor payable" },
+                        { value: "PAY", label: "Payment Issued", hint: "Reduces vendor payable" },
+                        { value: "ADJUST_UP", label: "Balance Correction (Increase)", hint: "Internal correction raises payable" },
+                        { value: "ADJUST_DOWN", label: "Balance Correction (Decrease)", hint: "Internal correction lowers payable" },
                       ].map((option) => {
                         const selected = vendorEntryForm.mode === option.value;
 
@@ -2391,7 +3390,38 @@ export default function LedgerTab() {
                   </div>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Statement Date</label>
+                    <input
+                      type="date"
+                      value={vendorEntryForm.entry_date}
+                      onChange={(event) =>
+                        setVendorEntryForm((current) => ({
+                          ...current,
+                          entry_date: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm text-slate-300">Document Number</label>
+                    <input
+                      type="text"
+                      value={vendorEntryForm.document_number}
+                      onChange={(event) =>
+                        setVendorEntryForm((current) => ({
+                          ...current,
+                          document_number: event.target.value,
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                      placeholder="Invoice, bill, challan, receipt no."
+                    />
+                  </div>
+
                   <div>
                     <label className="mb-2 block text-sm text-slate-300">Amount</label>
                     <input
@@ -2409,7 +3439,9 @@ export default function LedgerTab() {
                       placeholder="0.00"
                     />
                   </div>
+                </div>
 
+                <div className="grid gap-4 md:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-sm text-slate-300">Note</label>
                     <input
@@ -2424,6 +3456,10 @@ export default function LedgerTab() {
                       className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
                       placeholder="Example: Rice sack purchase"
                     />
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-sm text-slate-400">
+                    Manual adjustments are meant for corrections, dispute settlements, and backward balance fixes without touching original audit history.
                   </div>
                 </div>
 
@@ -2456,21 +3492,27 @@ export default function LedgerTab() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
                 <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Vendor Accounts</div>
                 <div className="mt-2 text-2xl font-semibold text-emerald-200">{vendorAccounts.length}</div>
               </div>
               <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
-                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Selected Balance</div>
-                <div className="mt-2 text-2xl font-semibold text-white">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Live Current Due</div>
+                <div className="mt-2 text-2xl font-semibold text-amber-200">
                   {vendorReport ? formatCurrency(vendorReport.summary.current_balance) : formatCurrency(0)}
                 </div>
               </div>
               <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
-                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Transactions</div>
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Statement Opening</div>
+                <div className="mt-2 text-2xl font-semibold text-white">
+                  {vendorReport ? formatCurrency(vendorReport.summary.statement_opening_balance) : formatCurrency(0)}
+                </div>
+              </div>
+              <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Statement Closing</div>
                 <div className="mt-2 text-2xl font-semibold text-sky-200">
-                  {vendorReport ? vendorReport.summary.transaction_count : 0}
+                  {vendorReport ? formatCurrency(vendorReport.summary.statement_closing_balance) : formatCurrency(0)}
                 </div>
               </div>
             </div>
@@ -2482,17 +3524,27 @@ export default function LedgerTab() {
                 <div>
                   <div className="text-lg font-semibold text-white">Selected Vendor Snapshot</div>
                   <div className="mt-1 text-sm text-slate-400">
-                    Open a vendor to see the live due, recent notes, and undo-ready manual entries.
+                    Open a vendor to review statement range, balance movement, document references, and printable conflict-ready details.
                   </div>
                 </div>
-                {vendorReport ? (
-                  <button
-                    onClick={() => openAccountReport(vendorReport.account.id)}
-                    className="rounded-2xl border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:text-white"
-                  >
-                    View Full Ledger
-                  </button>
-                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {vendorReport ? (
+                    <>
+                      <button
+                        onClick={() => openAccountReport(vendorReport.account.id)}
+                        className="rounded-2xl border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:text-white"
+                      >
+                        View Full Ledger
+                      </button>
+                      <button
+                        onClick={() => openVendorStatementWindow(vendorReport)}
+                        className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/20"
+                      >
+                        Print Statement
+                      </button>
+                    </>
+                  ) : null}
+                </div>
               </div>
 
               {!selectedVendorId ? (
@@ -2511,10 +3563,52 @@ export default function LedgerTab() {
                 <PanelLoader
                   eyebrow="Vendor Ledger"
                   label="Loading vendor activity..."
-                  description="Pulling vendor balance, manual dues, payments, and undo-ready entries."
+                  description="Pulling vendor balance, statement range, manual dues, payments, and undo-ready entries."
                 />
               ) : vendorReport ? (
                 <>
+                  <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]">
+                      <input
+                        type="date"
+                        value={vendorStatementFilters.start_date}
+                        onChange={(event) =>
+                          setVendorStatementFilters((current) => ({
+                            ...current,
+                            start_date: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                      />
+                      <input
+                        type="date"
+                        value={vendorStatementFilters.end_date}
+                        onChange={(event) =>
+                          setVendorStatementFilters((current) => ({
+                            ...current,
+                            end_date: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+                      />
+                      <button
+                        onClick={handleClearVendorStatementFilters}
+                        className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        onClick={handleApplyVendorStatementFilters}
+                        className="rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400"
+                      >
+                        Apply Range
+                      </button>
+                    </div>
+                    <div className="mt-3 text-sm text-slate-400">
+                      Statement range: <span className="font-semibold text-slate-200">{formatStatementRange(vendorReport.filters)}</span>
+                    </div>
+                  </div>
+
                   <div className="mt-4 grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
                       <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Vendor</div>
@@ -2524,12 +3618,45 @@ export default function LedgerTab() {
                       </div>
                     </div>
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Current Due</div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Closing Balance For This Statement</div>
                       <div className="mt-2 text-2xl font-semibold text-amber-200">
-                        {formatCurrency(vendorReport.summary.current_balance)}
+                        {formatCurrency(vendorReport.summary.statement_closing_balance)}
                       </div>
                       <div className="mt-2 text-sm text-slate-400">
-                        Positive means the restaurant still owes this vendor.
+                        Positive means the restaurant still owes this vendor for the selected statement range.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Due Added</div>
+                      <div className="mt-2 text-xl font-semibold text-white">
+                        {formatCurrency(vendorReport.vendor_statement?.due_added || 0)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Payments Made</div>
+                      <div className="mt-2 text-xl font-semibold text-emerald-200">
+                        {formatCurrency(vendorReport.vendor_statement?.payments_made || 0)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Adjust Up</div>
+                      <div className="mt-2 text-xl font-semibold text-amber-200">
+                        {formatCurrency(vendorReport.vendor_statement?.adjustments_up || 0)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Adjust Down</div>
+                      <div className="mt-2 text-xl font-semibold text-sky-200">
+                        {formatCurrency(vendorReport.vendor_statement?.adjustments_down || 0)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Transactions</div>
+                      <div className="mt-2 text-xl font-semibold text-white">
+                        {vendorReport.summary.transaction_count}
                       </div>
                     </div>
                   </div>
@@ -2538,10 +3665,13 @@ export default function LedgerTab() {
                     <table className="min-w-full text-left text-sm">
                       <thead className="text-xs uppercase tracking-[0.18em] text-slate-500">
                         <tr>
-                          <th className="pb-3 pr-4">Date</th>
+                          <th className="pb-3 pr-4">Statement Date</th>
+                          <th className="pb-3 pr-4">Logged</th>
                           <th className="pb-3 pr-4">Action</th>
+                          <th className="pb-3 pr-4">Document</th>
                           <th className="pb-3 pr-4">Amount</th>
                           <th className="pb-3 pr-4">Payment</th>
+                          <th className="pb-3 pr-4">Created By</th>
                           <th className="pb-3 pr-4">Note</th>
                           <th className="pb-3 pr-4">Running</th>
                           <th className="pb-3">Undo</th>
@@ -2549,28 +3679,20 @@ export default function LedgerTab() {
                       </thead>
                       <tbody>
                         {vendorReport.transactions.length ? (
-                          vendorReport.transactions
-                            .slice()
-                            .reverse()
-                            .map((entry) => (
+                          vendorReport.transactions.map((entry) => (
                               <tr key={entry.id} className="border-t border-slate-800 align-top">
-                                <td className="py-3 pr-4 text-slate-300">{formatDateTime(entry.date)}</td>
+                                <td className="py-3 pr-4 text-slate-300">{formatDate(entry.entry_date)}</td>
+                                <td className="py-3 pr-4 text-slate-400">{formatDateTime(entry.date)}</td>
                                 <td className="py-3 pr-4">
-                                  <div className="font-semibold text-white">
-                                    {entry.reference === "VENDOR-DUE"
-                                      ? "We Owe Vendor"
-                                      : entry.reference === "VENDOR-PAY"
-                                        ? "We Paid Vendor"
-                                        : entry.reference?.startsWith("UNDO-ENTRY-")
-                                          ? "Undo Entry"
-                                          : entry.entry_type}
-                                  </div>
+                                  <div className="font-semibold text-white">{vendorActionLabel(entry)}</div>
                                   <div className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">
                                     {entry.reference || "-"}
                                   </div>
                                 </td>
+                                <td className="py-3 pr-4 text-slate-300">{entry.document_number || "-"}</td>
                                 <td className="py-3 pr-4 font-semibold text-white">{formatCurrency(entry.amount)}</td>
                                 <td className="py-3 pr-4 text-slate-300">{entry.payment_type}</td>
+                                <td className="py-3 pr-4 text-slate-400">{entry.created_by_name || "-"}</td>
                                 <td className="py-3 pr-4 text-slate-400">{entry.description || "-"}</td>
                                 <td className="py-3 pr-4 font-semibold text-amber-200">
                                   {formatCurrency(entry.running_balance)}
@@ -2583,16 +3705,16 @@ export default function LedgerTab() {
                                     >
                                       Undo
                                     </button>
-                                  ) : (
-                                    <span className="text-xs text-slate-500">Locked</span>
-                                  )}
+                                ) : (
+                                  <span className="text-xs text-slate-500">Locked</span>
+                                )}
                                 </td>
                               </tr>
                             ))
                         ) : (
                           <tr>
-                            <td colSpan="7" className="py-10 text-center text-slate-500">
-                              No vendor transactions yet.
+                            <td colSpan="10" className="py-10 text-center text-slate-500">
+                              No vendor transactions found for the selected statement range.
                             </td>
                           </tr>
                         )}

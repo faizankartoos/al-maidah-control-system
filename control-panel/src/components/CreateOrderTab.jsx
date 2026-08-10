@@ -50,14 +50,9 @@ function normalizeDeliveryBoys(payload) {
 
   return [...payload]
     .filter((boy) => boy && boy.id && boy.name)
-    .sort((left, right) => {
-      const activeDelta = Number(Boolean(right.is_active)) - Number(Boolean(left.is_active));
-      if (activeDelta !== 0) {
-        return activeDelta;
-      }
-
-      return String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" });
-    });
+    .sort((left, right) =>
+      String(left.name).localeCompare(String(right.name), undefined, { sensitivity: "base" })
+    );
 }
 
 export default function OrdersTab({ externalMode = false }) {

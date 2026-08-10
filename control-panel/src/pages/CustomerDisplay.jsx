@@ -421,6 +421,20 @@ return {left,right}
 
 const {left,right} = splitOrders()
 
+function orderTypeLabel(orderType){
+  if(orderType === "DINE_IN") return "DINE-IN"
+  if(orderType === "TAKEAWAY") return "TAKEAWAY"
+  if(orderType === "DELIVERY") return "DELIVERY"
+  return orderType || "ORDER"
+}
+
+function orderTypeBadgeClasses(orderType){
+  if(orderType === "DINE_IN") return "bg-amber-100 text-amber-900 border-amber-300"
+  if(orderType === "TAKEAWAY") return "bg-sky-100 text-sky-900 border-sky-300"
+  if(orderType === "DELIVERY") return "bg-rose-100 text-rose-900 border-rose-300"
+  return "bg-slate-100 text-slate-900 border-slate-300"
+}
+
 
 
 function ProgressBar({order}){
@@ -473,11 +487,19 @@ function Row({order}){
 
 return(
 
-<div className="grid grid-cols-[1fr_2fr] items-center py-6 px-6">
+<div className="grid grid-cols-[1.08fr_1.92fr] items-center gap-4 border-b border-gray-200 py-5 px-6">
 
-<div className="text-6xl font-bold text-black">
+<div>
 
+<div
+className={`inline-flex rounded-full border px-4 py-1 text-lg font-extrabold tracking-[0.22em] ${orderTypeBadgeClasses(order.order_type)}`}
+>
+{orderTypeLabel(order.order_type)}
+</div>
+
+<div className="mt-3 text-6xl font-bold text-black">
 {order.id}
+</div>
 
 </div>
 

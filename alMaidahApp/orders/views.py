@@ -258,7 +258,7 @@ class DeliveryBoySettingsListCreateAPIView(APIView):
     required_tabs = ("SETTINGS",)
 
     def get(self, request):
-        queryset = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("-is_active", "name", "id")
+        queryset = LedgerAccount.objects.filter(account_type="DELIVERY").order_by("name", "id")
         return Response(AccountSerializer(queryset, many=True).data)
 
     def post(self, request):
@@ -268,7 +268,7 @@ class DeliveryBoySettingsListCreateAPIView(APIView):
             "contact_number": request.data.get("contact_number"),
             "address": request.data.get("address"),
             "opening_balance": request.data.get("opening_balance", 0),
-            "is_active": request.data.get("is_active", True),
+            "is_active": True,
         }
         serializer = AccountWriteSerializer(data=payload)
 
@@ -300,7 +300,7 @@ class DeliveryBoySettingsDetailAPIView(APIView):
             "contact_number": request.data.get("contact_number", account.contact_number),
             "address": request.data.get("address", account.address),
             "opening_balance": request.data.get("opening_balance", account.opening_balance),
-            "is_active": request.data.get("is_active", account.is_active),
+            "is_active": True,
         }
         serializer = AccountWriteSerializer(account, data=payload, partial=True)
 
@@ -322,19 +322,8 @@ class DeliveryBoySettingsDetailAPIView(APIView):
         except LedgerAccount.DoesNotExist:
             return Response({"error": "Delivery boy not found."}, status=404)
 
-        if account.delivery_orders.exists() or account.entries.exists():
-            if account.is_active:
-                account.is_active = False
-                account.save(update_fields=["is_active"])
-
-            return Response(
-                {
-                    "success": True,
-                    "action": "archived",
-                    "message": "Delivery boy archived because linked orders or transactions exist.",
-                }
-            )
-
+        Order.objects.filter(delivery_boy=account).update(delivery_boy=None)
+        account.entries.all().delete()
         account.delete()
         return Response({"success": True, "action": "deleted", "message": "Delivery boy removed."})
 
@@ -1665,6 +1654,9 @@ class OrdersFilterAPIView(APIView):
                 "delivery_address": o.delivery_address,
                 "area": o.area_id,
                 "area_name": o.area.name if o.area else None,
+                "customer_account": o.customer_account_id,
+                "delivery_boy": o.delivery_boy_id,
+                "delivery_boy_name": o.delivery_boy.name if o.delivery_boy else None,
                 "created_at": o.created_at,
                 "updated_at": o.updated_at,
                 "scheduled_time": o.scheduled_time,
@@ -1688,9 +1680,7 @@ class OrderDisplayAPIView(APIView):
 
     def get(self, request):
 
-        orders = Order.objects.exclude(
-            order_type="DELIVERY"
-        ).order_by("-created_at")[:50]
+        orders = Order.objects.order_by("-created_at")[:50]
 
         data = []
 
@@ -1699,9 +1689,10 @@ class OrderDisplayAPIView(APIView):
             data.append({
                 "id": o.id,
                 "status": o.order_status,
+                "order_type": o.order_type,
                 "amount": o.total_amount,
                 "created_at": o.created_at,
-                "table": o.table_number
+                "table": o.table_number,
             })
 
         return Response(data)
