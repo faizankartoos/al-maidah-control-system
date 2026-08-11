@@ -5,9 +5,18 @@ from .models import LedgerAccount, LedgerEntry
 @admin.register(LedgerAccount)
 class LedgerAccountAdmin(admin.ModelAdmin):
 
-    list_display = ("id", "name", "account_type", "balance", "created_at")
+    list_display = (
+        "id",
+        "name",
+        "account_type",
+        "contact_number",
+        "archived_contact_number",
+        "is_active",
+        "balance",
+        "created_at",
+    )
 
-    search_fields = ("name", "contact_number")
+    search_fields = ("name", "contact_number", "archived_contact_number")
 
 
 @admin.register(LedgerEntry)

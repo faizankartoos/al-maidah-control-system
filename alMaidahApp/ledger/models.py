@@ -26,6 +26,12 @@ class LedgerAccount(models.Model):
         unique=True
     )
 
+    archived_contact_number = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True
+    )
+
     address = models.CharField(
         max_length=255,
         blank=True,

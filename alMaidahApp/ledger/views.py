@@ -12,7 +12,14 @@ from rest_framework.views import APIView
 
 from .models import LedgerAccount, LedgerEntry
 from .reports import account_ledger_report, daily_sales_report
-from .serializers import AccountSerializer, AccountWriteSerializer
+from .serializers import (
+    AccountSerializer,
+    AccountWriteSerializer,
+    build_contact_conflict_message,
+    find_conflicting_contact_account,
+    normalize_contact_number,
+    serialize_conflicting_account,
+)
 from .services import record_credit, record_debit
 from .utils import get_cash_drawer
 from orders.models import Order, OrderPayment
@@ -66,6 +73,51 @@ def _account_integrity_error_message(exc):
     }
 
 
+def _build_account_validation_error_response(serializer_errors, request_data, exclude_account_id=None, fallback="Request failed."):
+    error_message = _extract_error_message(serializer_errors, fallback)
+    normalized_phone = normalize_contact_number(request_data.get("contact_number"))
+    conflicting_account = find_conflicting_contact_account(
+        normalized_phone,
+        exclude_account_id=exclude_account_id,
+    )
+
+    if conflicting_account:
+        error_message = build_contact_conflict_message(conflicting_account)
+
+        errors = serializer_errors.copy()
+        errors["contact_number"] = [error_message]
+
+        return {
+            "error": error_message,
+            "errors": errors,
+            "conflict_account": serialize_conflicting_account(conflicting_account),
+        }
+
+    return {
+        "error": error_message,
+        "errors": serializer_errors,
+    }
+
+
+def _build_contact_integrity_error_response(exc, request_data, exclude_account_id=None):
+    normalized_phone = normalize_contact_number(request_data.get("contact_number"))
+    conflicting_account = find_conflicting_contact_account(
+        normalized_phone,
+        exclude_account_id=exclude_account_id,
+    )
+
+    if conflicting_account:
+        return {
+            "error": build_contact_conflict_message(conflicting_account),
+            "errors": {
+                "contact_number": [build_contact_conflict_message(conflicting_account)],
+            },
+            "conflict_account": serialize_conflicting_account(conflicting_account),
+        }
+
+    return _account_integrity_error_message(exc)
+
+
 def _detach_account_from_orders(account):
     if account.account_type == "CUSTOMER":
         Order.objects.filter(customer_account=account).update(customer_account=None)
@@ -73,6 +125,22 @@ def _detach_account_from_orders(account):
 
     if account.account_type == "DELIVERY":
         Order.objects.filter(delivery_boy=account).update(delivery_boy=None)
+
+
+def _archive_account_with_history(account):
+    update_fields = ["is_active"]
+
+    if account.contact_number:
+        if not account.archived_contact_number:
+            account.archived_contact_number = account.contact_number
+            update_fields.append("archived_contact_number")
+        account.contact_number = None
+        update_fields.append("contact_number")
+
+    if account.is_active:
+        account.is_active = False
+
+    account.save(update_fields=update_fields)
 
 
 def _vendor_entry_can_be_undone(entry):
@@ -190,15 +258,13 @@ def _perform_quick_delete(account):
     _detach_account_from_orders(account)
 
     if account.entries.exists():
-        if account.is_active:
-            account.is_active = False
-            account.save(update_fields=["is_active"])
+        _archive_account_with_history(account)
 
         return {
             "ok": True,
             "account_id": account.id,
             "account_name": account.name,
-            "message": "Ledger account archived safely. Transaction history was kept untouched.",
+            "message": "Ledger account archived safely. Transaction history was kept untouched and the phone number was released for reuse.",
             "action": "archived",
         }
 
@@ -257,10 +323,11 @@ class AccountListCreateAPIView(APIView):
         serializer = AccountWriteSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(
-                {
-                    "error": _extract_error_message(serializer.errors, "Failed to create account."),
-                    "errors": serializer.errors,
-                },
+                _build_account_validation_error_response(
+                    serializer.errors,
+                    request.data,
+                    fallback="Failed to create account.",
+                ),
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -268,7 +335,7 @@ class AccountListCreateAPIView(APIView):
             account = serializer.save()
         except IntegrityError as exc:
             return Response(
-                _account_integrity_error_message(exc),
+                _build_contact_integrity_error_response(exc, request.data),
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -308,10 +375,12 @@ class AccountDetailAPIView(APIView):
         serializer = AccountWriteSerializer(account, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(
-                {
-                    "error": _extract_error_message(serializer.errors, "Failed to update account."),
-                    "errors": serializer.errors,
-                },
+                _build_account_validation_error_response(
+                    serializer.errors,
+                    request.data,
+                    exclude_account_id=account.id,
+                    fallback="Failed to update account.",
+                ),
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -319,7 +388,11 @@ class AccountDetailAPIView(APIView):
             updated_account = serializer.save()
         except IntegrityError as exc:
             return Response(
-                _account_integrity_error_message(exc),
+                _build_contact_integrity_error_response(
+                    exc,
+                    request.data,
+                    exclude_account_id=account.id,
+                ),
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

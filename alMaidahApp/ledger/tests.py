@@ -520,6 +520,55 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("phone number", response.json()["error"].lower())
         self.assertIn("contact_number", response.json()["errors"])
+        self.assertEqual(response.json()["conflict_account"]["name"], "Existing Customer")
+        self.assertEqual(response.json()["conflict_account"]["account_type"], "CUSTOMER")
+
+    def test_create_account_duplicate_phone_error_reveals_archived_conflict(self):
+        LedgerAccount.objects.create(
+            name="Archived Customer",
+            account_type="CUSTOMER",
+            contact_number="7000005555",
+            is_active=False,
+        )
+
+        response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Fresh Customer",
+                "account_type": "CUSTOMER",
+                "contact_number": "7000005555",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("archived", response.json()["error"].lower())
+        self.assertEqual(response.json()["conflict_account"]["name"], "Archived Customer")
+        self.assertFalse(response.json()["conflict_account"]["is_active"])
+
+    def test_create_account_duplicate_phone_error_reveals_vendor_conflict(self):
+        LedgerAccount.objects.create(
+            name="Metro Supplier",
+            account_type="VENDOR",
+            contact_number="7000007777",
+        )
+
+        response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Walk In Customer",
+                "account_type": "CUSTOMER",
+                "contact_number": "7000007777",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("vendor ledger", response.json()["error"].lower())
+        self.assertEqual(response.json()["conflict_account"]["name"], "Metro Supplier")
+        self.assertEqual(response.json()["conflict_account"]["account_type"], "VENDOR")
 
     def test_create_vendor_returns_clear_duplicate_name_error(self):
         LedgerAccount.objects.create(
@@ -788,10 +837,25 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertTrue(LedgerAccount.objects.filter(id=customer.id).exists())
         customer.refresh_from_db()
         self.assertFalse(customer.is_active)
+        self.assertIsNone(customer.contact_number)
+        self.assertEqual(customer.archived_contact_number, "7000000013")
         self.assertTrue(Order.objects.filter(id=order.id).exists())
         order.refresh_from_db()
         self.assertIsNone(order.customer_account)
         self.assertTrue(LedgerEntry.objects.filter(reference=f"ORDER-{order.id}").exists())
+
+        recreate_response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Quick Delete Customer Recreated",
+                "account_type": "CUSTOMER",
+                "contact_number": "7000000013",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(recreate_response.status_code, 201)
 
     def test_bulk_quick_delete_processes_multiple_accounts(self):
         clean_vendor = LedgerAccount.objects.create(
@@ -847,8 +911,49 @@ class LedgerAccountApiTests(AuthenticatedLedgerTestCase):
         self.assertFalse(LedgerAccount.objects.filter(id=clean_vendor.id).exists())
         customer.refresh_from_db()
         self.assertFalse(customer.is_active)
+        self.assertIsNone(customer.contact_number)
+        self.assertEqual(customer.archived_contact_number, "7000000014")
         order.refresh_from_db()
         self.assertIsNone(order.customer_account)
+
+    def test_archived_vendor_can_be_recreated_with_same_name_and_phone(self):
+        vendor = LedgerAccount.objects.create(
+            name="Metro Supplier",
+            account_type="VENDOR",
+            contact_number="7000008899",
+        )
+
+        record_credit(
+            account=vendor,
+            amount=Decimal("450.00"),
+            reference="VENDOR-DUE",
+            description="Vendor due",
+        )
+
+        delete_response = self.client.post(
+            f"/api/accounts/{vendor.id}/quick-delete/",
+            {"password": "admin@almaidah"},
+        )
+
+        self.assertEqual(delete_response.status_code, 200)
+
+        vendor.refresh_from_db()
+        self.assertFalse(vendor.is_active)
+        self.assertIsNone(vendor.contact_number)
+        self.assertEqual(vendor.archived_contact_number, "7000008899")
+
+        recreate_response = self.client.post(
+            "/api/accounts/",
+            {
+                "name": "Metro Supplier",
+                "account_type": "VENDOR",
+                "contact_number": "7000008899",
+                "opening_balance": "0.00",
+                "is_active": True,
+            },
+        )
+
+        self.assertEqual(recreate_response.status_code, 201)
 
     def test_bulk_quick_delete_requires_password(self):
         vendor = LedgerAccount.objects.create(
