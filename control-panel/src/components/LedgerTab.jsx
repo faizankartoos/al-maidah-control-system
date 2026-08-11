@@ -4,11 +4,11 @@ import { InlineButtonContent, InlineLoaderLabel, PanelLoader } from "./SystemLoa
 
 const today = new Date().toISOString().split("T")[0];
 const ACCOUNT_MANAGEMENT_PASSWORD = "admin@almaidah";
+const LEDGER_SHOW_ZERO_BALANCE_STORAGE_KEY = "al_maidah_ledger_show_zero_balance";
 
 const ACCOUNT_TYPE_OPTIONS = [
   { value: "CUSTOMER", label: "Customer" },
   { value: "DELIVERY", label: "Delivery Boy" },
-  { value: "VENDOR", label: "Vendor" },
 ];
 
 const ENTRY_TYPE_OPTIONS = [
@@ -33,6 +33,20 @@ function createEmptyAccountForm() {
     opening_balance: "0.00",
     is_active: true,
   };
+}
+
+function readLedgerShowZeroBalancePreference() {
+  if (typeof window === "undefined") {
+    return true;
+  }
+
+  const storedValue = window.localStorage.getItem(LEDGER_SHOW_ZERO_BALANCE_STORAGE_KEY);
+
+  if (storedValue === null) {
+    return true;
+  }
+
+  return storedValue === "1";
 }
 
 function createEmptyVendorEntryForm() {
@@ -891,6 +905,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     search: "",
     account_type: "",
     show_inactive: false,
+    show_zero_balance: readLedgerShowZeroBalancePreference(),
   });
   const [transactionFilters, setTransactionFilters] = useState({
     search: "",
@@ -1051,6 +1066,17 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   }, [accountFilters.show_inactive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      LEDGER_SHOW_ZERO_BALANCE_STORAGE_KEY,
+      accountFilters.show_zero_balance ? "1" : "0",
+    );
+  }, [accountFilters.show_zero_balance]);
+
+  useEffect(() => {
     if (!selectedDeliveryLedgerBoyId) {
       return;
     }
@@ -1072,12 +1098,20 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
 
   const filteredAccounts = useMemo(() => {
     return accounts
+      .filter((account) => account.account_type !== "VENDOR")
       .filter((account) => {
         if (!accountFilters.account_type) {
           return true;
         }
 
         return account.account_type === accountFilters.account_type;
+      })
+      .filter((account) => {
+        if (account.account_type === "CASH" || accountFilters.show_zero_balance) {
+          return true;
+        }
+
+        return Math.abs(Number(account.balance || 0)) > 0.0001;
       })
       .filter((account) => {
         const search = accountFilters.search.trim().toLowerCase();
@@ -1131,10 +1165,13 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   }, [transactions]);
 
   const directorySummary = useMemo(() => {
+    const mainAccounts = accounts.filter((account) => account.account_type !== "VENDOR");
+
     return {
-      totalAccounts: accounts.length,
-      customers: accounts.filter((account) => account.account_type === "CUSTOMER").length,
-      delivery: accounts.filter((account) => account.account_type === "DELIVERY").length,
+      totalAccounts: mainAccounts.length,
+      customers: mainAccounts.filter((account) => account.account_type === "CUSTOMER").length,
+      delivery: mainAccounts.filter((account) => account.account_type === "DELIVERY").length,
+      cash: mainAccounts.filter((account) => account.account_type === "CASH").length,
       vendors: accounts.filter((account) => account.account_type === "VENDOR").length,
     };
   }, [accounts]);
@@ -1241,6 +1278,24 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     });
     setSuccess("");
     setError("");
+  };
+
+  const startVendorAccountEdit = (account) => {
+    requestAccountManagementUnlock(() => {
+      setActiveTab("ACCOUNTS");
+      setEditingAccount(account);
+      setAccountForm({
+        name: account.name || "",
+        account_type: "VENDOR",
+        contact_number: account.contact_number || "",
+        address: account.address || "",
+        opening_balance: String(account.opening_balance ?? "0.00"),
+        is_active: Boolean(account.is_active),
+      });
+      setSuccess("");
+      setError("");
+      setAccountFormErrors({});
+    });
   };
 
   const requestAccountManagementUnlock = (callback) => {
@@ -1936,6 +1991,217 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     }
   };
 
+  const printAllVendorBalances = () => {
+    if (!vendorAccounts.length) {
+      setError("No vendor accounts are available to print right now.");
+      return;
+    }
+
+    const win = window.open("", "", "width=980,height=760");
+
+    if (!win) {
+      alert("Unable to open print preview. Please allow pop-ups and try again.");
+      return;
+    }
+
+    const totalVendorBalance = vendorAccounts.reduce(
+      (sum, account) => sum + Number(account.balance || 0),
+      0,
+    );
+
+    const rows = vendorAccounts
+      .map(
+        (account, index) => `
+          <tr>
+            <td>${index + 1}</td>
+            <td>${escapeHtml(account.name)}</td>
+            <td>${escapeHtml(account.contact_number || "-")}</td>
+            <td>${escapeHtml(account.address || "-")}</td>
+            <td class="amount">${escapeHtml(formatCurrency(account.balance))}</td>
+          </tr>
+        `,
+      )
+      .join("");
+
+    win.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8" />
+        <title>Vendor Balance List</title>
+        <style>
+          @page {
+            size: A4 portrait;
+            margin: 12mm;
+          }
+
+          body {
+            font-family: Arial, sans-serif;
+            color: #0f172a;
+            margin: 0;
+            font-size: 12px;
+          }
+
+          .header {
+            display: flex;
+            justify-content: space-between;
+            gap: 24px;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 12px;
+          }
+
+          .title {
+            font-size: 24px;
+            font-weight: 700;
+          }
+
+          .copy {
+            margin-top: 4px;
+            line-height: 1.5;
+          }
+
+          .meta {
+            text-align: right;
+          }
+
+          .summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 18px;
+          }
+
+          .summary-card {
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: #f8fafc;
+          }
+
+          .summary-label {
+            font-size: 10px;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+          }
+
+          .summary-value {
+            margin-top: 6px;
+            font-size: 16px;
+            font-weight: 700;
+          }
+
+          .section-title {
+            margin-top: 18px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+          }
+
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+
+          th,
+          td {
+            border: 1px solid #cbd5e1;
+            padding: 8px;
+            vertical-align: top;
+          }
+
+          th {
+            background: #e2e8f0;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-align: left;
+          }
+
+          .amount {
+            text-align: right;
+            white-space: nowrap;
+            font-weight: 700;
+          }
+
+          .footer {
+            margin-top: 18px;
+            font-size: 11px;
+            color: #475569;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <div class="title">Al-Maidah Cafe</div>
+            <div class="copy">
+              Chadoora<br />
+              Phone: 7051333637<br />
+              Vendor balance list
+            </div>
+          </div>
+          <div class="meta">
+            <div class="title" style="font-size: 20px;">Vendor Accounts</div>
+            <div class="copy">
+              Printed: ${escapeHtml(formatDateTime(new Date()))}
+            </div>
+          </div>
+        </div>
+
+        <div class="summary">
+          <div class="summary-card">
+            <div class="summary-label">Vendor Accounts</div>
+            <div class="summary-value">${escapeHtml(String(vendorAccounts.length))}</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Net Vendor Balance</div>
+            <div class="summary-value">${escapeHtml(formatCurrency(totalVendorBalance))}</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">Outstanding Direction</div>
+            <div class="summary-value">${totalVendorBalance >= 0 ? "Payable" : "Advance"}</div>
+          </div>
+        </div>
+
+        <div class="section-title">Vendor Balances</div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Vendor</th>
+              <th>Phone</th>
+              <th>Address</th>
+              <th>Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+
+        <div class="footer">
+          This balance list is generated from the vendor ledger and is intended for quick daily reconciliation.
+        </div>
+      </body>
+      </html>
+    `);
+
+    win.document.close();
+    win.focus();
+    win.onload = () => {
+      setTimeout(() => {
+        win.focus();
+        win.print();
+        win.onafterprint = () => {
+          win.close();
+        };
+      }, 250);
+    };
+  };
+
   const openVendorStatementWindow = (report) => {
     const win = window.open("", "", "width=1080,height=860");
 
@@ -2321,12 +2587,18 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
               <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-4">
                 <div>
                   <div className="text-lg font-semibold">
-                    {editingAccount ? `Edit Account: ${editingAccount.name}` : "Create Account"}
+                    {editingAccount
+                      ? `Edit Account: ${editingAccount.name}`
+                      : accountForm.account_type === "VENDOR"
+                        ? "Create Vendor Account"
+                        : "Create Account"}
                   </div>
                   <div className="mt-1 text-sm text-slate-400">
                     {editingAccount
                       ? "Correct account details here. Opening balance changes will also shift the live balance."
-                      : "Add customer, delivery, or vendor ledger accounts directly from the panel. Phone can stay blank if you want to keep the account manual for now."}
+                      : accountForm.account_type === "VENDOR"
+                        ? "Vendor accounts are created from the vendor workspace, but the same protected account engine handles the record safely here."
+                        : "Add customer or delivery ledger accounts directly from the panel. Phone can stay blank if you want to keep the account manual for now."}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -2374,29 +2646,39 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
 
                 <div>
                   <label className="mb-2 block text-sm text-slate-300">Account Type</label>
-                  <select
-                    value={accountForm.account_type}
-                    onChange={(event) => {
-                      setAccountForm((current) => ({
-                        ...current,
-                        account_type: event.target.value,
-                      }));
-                      clearAccountFormError("account_type");
-                    }}
-                    className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
-                      accountFormErrors.account_type ? "border-rose-500/60" : "border-slate-700"
-                    }`}
-                    disabled={Boolean(editingAccount)}
-                  >
-                    {ACCOUNT_TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                  {accountForm.account_type === "VENDOR" ? (
+                    <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm font-semibold text-emerald-100">
+                      Vendor
+                    </div>
+                  ) : (
+                    <select
+                      value={accountForm.account_type}
+                      onChange={(event) => {
+                        setAccountForm((current) => ({
+                          ...current,
+                          account_type: event.target.value,
+                        }));
+                        clearAccountFormError("account_type");
+                      }}
+                      className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
+                        accountFormErrors.account_type ? "border-rose-500/60" : "border-slate-700"
+                      }`}
+                      disabled={Boolean(editingAccount)}
+                    >
+                      {ACCOUNT_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   {editingAccount ? (
                     <div className="mt-2 text-xs text-slate-500">
                       Account type stays locked after creation so existing ledger and order links remain safe.
+                    </div>
+                  ) : accountForm.account_type === "VENDOR" ? (
+                    <div className="mt-2 text-xs text-slate-500">
+                      Vendor accounts are created from Vendor Ledger controls and stay hidden from the main account directory.
                     </div>
                   ) : null}
                   {accountFormErrors.account_type ? (
@@ -2535,8 +2817,8 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                 <div className="mt-2 text-2xl font-semibold text-rose-200">{directorySummary.delivery}</div>
               </div>
               <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
-                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Vendors</div>
-                <div className="mt-2 text-2xl font-semibold text-emerald-200">{directorySummary.vendors}</div>
+                <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Cash Drawer Accounts</div>
+                <div className="mt-2 text-2xl font-semibold text-emerald-200">{directorySummary.cash}</div>
               </div>
               <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4">
                 <div className="text-xs uppercase tracking-[0.28em] text-slate-500">Total Accounts</div>
@@ -2584,16 +2866,20 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                 <option value="">All Types</option>
                 <option value="CUSTOMER">Customer</option>
                 <option value="DELIVERY">Delivery Boy</option>
-                <option value="VENDOR">Vendor</option>
                 <option value="CASH">Cash Drawer</option>
               </select>
             </div>
 
             <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-3">
               <div className="text-sm text-slate-300">
-                {accountFilters.show_inactive
-                  ? "Archived / inactive accounts are visible right now."
-                  : "Archived / inactive accounts are hidden so deleted accounts get out of your way."}
+                <div>
+                  {accountFilters.show_inactive
+                    ? "Archived / inactive accounts are visible right now."
+                    : "Archived / inactive accounts are hidden so deleted accounts get out of your way."}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Vendor accounts stay inside Vendor Ledger only.
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {!!selectedAccountIds.length && (
@@ -2604,6 +2890,21 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                     Bulk Delete ({selectedAccountIds.length})
                   </button>
                 )}
+                <button
+                  onClick={() =>
+                    setAccountFilters((current) => ({
+                      ...current,
+                      show_zero_balance: !current.show_zero_balance,
+                    }))
+                  }
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${
+                    accountFilters.show_zero_balance
+                      ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
+                      : "border border-slate-700 bg-slate-900 text-slate-200 hover:border-slate-500 hover:text-white"
+                  }`}
+                >
+                  {accountFilters.show_zero_balance ? "Hide Zero Balance" : "Show Zero Balance"}
+                </button>
                 <button
                   onClick={() =>
                     setAccountFilters((current) => ({
@@ -3307,11 +3608,32 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
               <div className="mt-4 space-y-4">
                 <div className="flex flex-wrap justify-end gap-3">
                   <button
+                    onClick={printAllVendorBalances}
+                    className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/20"
+                  >
+                    Print All Vendor Balances
+                  </button>
+                  <button
                     onClick={startVendorAccountCreate}
                     className="rounded-2xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/20"
                   >
                     Create Vendor Account
                   </button>
+                  {selectedVendorId ? (
+                    <button
+                      onClick={() => {
+                        const selectedVendor = vendorAccounts.find(
+                          (account) => String(account.id) === String(selectedVendorId),
+                        );
+                        if (selectedVendor) {
+                          startVendorAccountEdit(selectedVendor);
+                        }
+                      }}
+                      className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
+                    >
+                      Edit Vendor Account
+                    </button>
+                  ) : null}
                 </div>
 
                 <div>
@@ -3520,16 +3842,22 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
 
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-slate-950/70 p-5">
-              <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
-                <div>
-                  <div className="text-lg font-semibold text-white">Selected Vendor Snapshot</div>
-                  <div className="mt-1 text-sm text-slate-400">
-                    Open a vendor to review statement range, balance movement, document references, and printable conflict-ready details.
+                <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+                  <div>
+                    <div className="text-lg font-semibold text-white">Selected Vendor Snapshot</div>
+                    <div className="mt-1 text-sm text-slate-400">
+                      Open a vendor to review statement range, balance movement, document references, and printable conflict-ready details.
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {vendorReport ? (
                     <>
+                      <button
+                        onClick={() => startVendorAccountEdit(vendorReport.account)}
+                        className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
+                      >
+                        Edit Vendor
+                      </button>
                       <button
                         onClick={() => openAccountReport(vendorReport.account.id)}
                         className="rounded-2xl border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:text-white"
