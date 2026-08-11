@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
 import { InlineButtonContent } from "./SystemLoader";
+import {
+  buildMonthWindowWithReportingStart,
+  clampDateRangeToReportingStart,
+} from "../utils/operationalSettings";
 
 const today = new Date().toISOString().split("T")[0];
 const PROFIT_UNLOCK_PASSWORD = "admin@almaidah";
@@ -1074,6 +1078,7 @@ function FinancialTimelineChart({
 export default function ReportsTab() {
   const [fromDate, setFromDate] = useState(getMonthStart());
   const [toDate, setToDate] = useState(today);
+  const [operationalStartDate, setOperationalStartDate] = useState("");
   const [activePreset, setActivePreset] = useState("month");
   const [activeView, setActiveView] = useState("overview");
   const [dashboard, setDashboard] = useState(null);
@@ -1104,15 +1109,19 @@ export default function ReportsTab() {
     setSelectedMovementDate("");
   };
 
-  const loadReports = async (from = fromDate, to = toDate) => {
+  const loadReports = async (from = fromDate, to = toDate, baseline = operationalStartDate) => {
+    const nextRange = clampDateRangeToReportingStart(from, to, baseline);
+
     try {
       setLoading(true);
       setError("");
+      setFromDate(nextRange.fromDate);
+      setToDate(nextRange.toDate);
 
       const response = await api.get("reports/dashboard/", {
         params: {
-          from_date: from,
-          to_date: to,
+          from_date: nextRange.fromDate,
+          to_date: nextRange.toDate,
         },
       });
 
@@ -1143,11 +1152,14 @@ export default function ReportsTab() {
     productId = consumptionProductId,
     from = fromDate,
     to = toDate,
+    baseline = operationalStartDate,
   ) => {
     if (!productId) {
       setConsumptionError("Select a product first to analyze its consumption.");
       return;
     }
+
+    const nextRange = clampDateRangeToReportingStart(from, to, baseline);
 
     try {
       setConsumptionLoading(true);
@@ -1155,8 +1167,8 @@ export default function ReportsTab() {
 
       const response = await api.get("reports/inventory-consumption/", {
         params: {
-          from_date: from,
-          to_date: to,
+          from_date: nextRange.fromDate,
+          to_date: nextRange.toDate,
           product_id: productId,
         },
       });
@@ -1207,17 +1219,41 @@ export default function ReportsTab() {
   };
 
   useEffect(() => {
-    loadReports(getMonthStart(), today);
-    loadProducts();
+    const loadInitialWorkspace = async () => {
+      let reportingStart = "";
+
+      try {
+        const response = await api.get("/system/operational-settings/");
+        reportingStart = response.data?.reporting_start_date || "";
+        setOperationalStartDate(reportingStart);
+      } catch {
+        reportingStart = "";
+      }
+
+      const initialRange = buildMonthWindowWithReportingStart(today, reportingStart);
+      setFromDate(initialRange.fromDate);
+      setToDate(initialRange.toDate);
+
+      loadReports(initialRange.fromDate, initialRange.toDate, reportingStart);
+      loadProducts();
+    };
+
+    loadInitialWorkspace();
   }, []);
 
   const applyPreset = (preset) => {
-    const range = buildPresetRange(preset);
-    setFromDate(range.from);
-    setToDate(range.to);
+    const rawRange = buildPresetRange(preset);
+    const range = clampDateRangeToReportingStart(
+      rawRange.from,
+      rawRange.to,
+      operationalStartDate,
+    );
+
+    setFromDate(range.fromDate);
+    setToDate(range.toDate);
     setActivePreset(preset);
     clearConsumptionAnalysis();
-    loadReports(range.from, range.to);
+    loadReports(range.fromDate, range.toDate);
   };
 
   const handleProfitUnlock = (event) => {
@@ -2359,7 +2395,18 @@ export default function ReportsTab() {
             <div>
               <label className="mb-2 block text-sm text-slate-300">Load Snapshot</label>
               <button
-                onClick={() => loadReports()}
+                onClick={() => {
+                  const nextRange = clampDateRangeToReportingStart(
+                    fromDate,
+                    toDate,
+                    operationalStartDate,
+                  );
+                  setFromDate(nextRange.fromDate);
+                  setToDate(nextRange.toDate);
+                  setActivePreset("custom");
+                  clearConsumptionAnalysis();
+                  loadReports(nextRange.fromDate, nextRange.toDate);
+                }}
                 disabled={loading}
                 className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
               >
@@ -2374,6 +2421,13 @@ export default function ReportsTab() {
         {error ? (
           <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
             {error}
+          </div>
+        ) : null}
+
+        {operationalStartDate ? (
+          <div className="mt-4 rounded-2xl border border-violet-500/25 bg-violet-500/10 px-4 py-3 text-sm text-violet-100">
+            System reporting start date is <span className="font-semibold text-white">{formatDate(operationalStartDate)}</span>.
+            Earlier date picks are automatically moved forward to this baseline.
           </div>
         ) : null}
       </SectionCard>

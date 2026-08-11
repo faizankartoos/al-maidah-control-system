@@ -25,6 +25,7 @@ from .services.profit import get_profit_report
 from .services.inventory_consumption import get_inventory_consumption_report
 from .services.data_insights import get_data_insights_report
 from .services.financial_drilldown import get_financial_drilldown_report
+from .services.reporting_window import clamp_reporting_window
 
 
 class DashboardReportAPIView(APIView):
@@ -33,9 +34,13 @@ class DashboardReportAPIView(APIView):
         date_serializer.is_valid(raise_exception=True)
 
         data = date_serializer.validated_data
-        report = get_dashboard_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
             data["to_date"],
+        )
+        report = get_dashboard_report(
+            from_date,
+            to_date,
         )
 
         serializer = DashboardReportSerializer(report)
@@ -48,9 +53,14 @@ class SalesReportAPIView(APIView):
 
         data = date_serializer.validated_data
 
-        report = get_sales_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
-            data["to_date"]
+            data["to_date"],
+        )
+
+        report = get_sales_report(
+            from_date,
+            to_date
         )
 
         serializer = SalesReportSerializer(report)
@@ -63,9 +73,14 @@ class CogsReportAPIView(APIView):
 
         data = date_serializer.validated_data
 
-        report = get_cogs_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
-            data["to_date"]
+            data["to_date"],
+        )
+
+        report = get_cogs_report(
+            from_date,
+            to_date
         )
 
         serializer = CogsReportSerializer(report)
@@ -78,9 +93,14 @@ class ExpensesReportAPIView(APIView):
 
         data = date_serializer.validated_data
 
-        report = get_expenses_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
-            data["to_date"]
+            data["to_date"],
+        )
+
+        report = get_expenses_report(
+            from_date,
+            to_date
         )
 
         serializer = ExpensesReportSerializer(report)
@@ -94,9 +114,14 @@ class ProfitReportAPIView(APIView):
 
         data = date_serializer.validated_data
 
-        report = get_profit_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
-            data["to_date"]
+            data["to_date"],
+        )
+
+        report = get_profit_report(
+            from_date,
+            to_date
         )
 
         serializer = ProfitReportSerializer(report)
@@ -109,9 +134,14 @@ class InventoryConsumptionReportAPIView(APIView):
         params.is_valid(raise_exception=True)
 
         data = params.validated_data
-        report = get_inventory_consumption_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
             data["to_date"],
+        )
+
+        report = get_inventory_consumption_report(
+            from_date,
+            to_date,
             data["product"],
         )
 
@@ -125,9 +155,14 @@ class FinancialDrilldownReportAPIView(APIView):
         params.is_valid(raise_exception=True)
 
         data = params.validated_data
-        report = get_financial_drilldown_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
             data["to_date"],
+        )
+
+        report = get_financial_drilldown_report(
+            from_date,
+            to_date,
             data["metric"],
         )
 
@@ -143,9 +178,14 @@ class DataInsightsReportAPIView(APIView):
         params.is_valid(raise_exception=True)
 
         data = params.validated_data
-        report = get_data_insights_report(
+        from_date, to_date, _baseline = clamp_reporting_window(
             data["from_date"],
             data["to_date"],
+        )
+
+        report = get_data_insights_report(
+            from_date,
+            to_date,
             report_timezone=data.get("timezone"),
         )
 

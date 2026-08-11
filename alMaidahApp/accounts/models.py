@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import models
 
@@ -157,3 +158,34 @@ def ensure_user_profile(user):
         profile.save()
 
     return profile
+
+
+class OperationalSettings(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    reporting_start_date = models.DateField(blank=True, null=True)
+    inventory_last_zeroed_at = models.DateTimeField(blank=True, null=True)
+    inventory_last_zeroed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="inventory_zero_resets",
+        blank=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Operational Settings"
+        verbose_name_plural = "Operational Settings"
+
+    def save(self, *args, **kwargs):
+        self.singleton_key = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Operational Settings"
+
+
+def get_operational_settings():
+    settings_row, _created = OperationalSettings.objects.get_or_create(singleton_key=1)
+    return settings_row

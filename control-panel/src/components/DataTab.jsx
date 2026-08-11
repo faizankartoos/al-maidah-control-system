@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import api from "../services/api";
 import { InlineButtonContent, PanelLoader } from "./SystemLoader";
+import {
+  buildMonthWindowWithReportingStart,
+  clampDateRangeToReportingStart,
+} from "../utils/operationalSettings";
 
 
 const today = new Date().toISOString().split("T")[0];
@@ -750,6 +754,7 @@ function FavoriteItemsGrid({ rows }) {
 export default function DataTab() {
   const [fromDate, setFromDate] = useState(getMonthStart());
   const [toDate, setToDate] = useState(today);
+  const [operationalStartDate, setOperationalStartDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [error, setError] = useState("");
@@ -758,17 +763,21 @@ export default function DataTab() {
   const [selectedArea, setSelectedArea] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
 
-  const loadData = async (from = fromDate, to = toDate) => {
+  const loadData = async (from = fromDate, to = toDate, baseline = operationalStartDate) => {
+    const nextRange = clampDateRangeToReportingStart(from, to, baseline);
+
     setLoading(true);
     setError("");
     setSelectedArea(null);
     setSelectedOrder(null);
+    setFromDate(nextRange.fromDate);
+    setToDate(nextRange.toDate);
 
     try {
       const response = await api.get("/reports/data-insights/", {
         params: {
-          from_date: from,
-          to_date: to,
+          from_date: nextRange.fromDate,
+          to_date: nextRange.toDate,
           timezone: browserTimeZone,
         },
       });
@@ -782,7 +791,24 @@ export default function DataTab() {
   };
 
   useEffect(() => {
-    loadData(getMonthStart(), today);
+    const loadInitialWorkspace = async () => {
+      let reportingStart = "";
+
+      try {
+        const response = await api.get("/system/operational-settings/");
+        reportingStart = response.data?.reporting_start_date || "";
+        setOperationalStartDate(reportingStart);
+      } catch {
+        reportingStart = "";
+      }
+
+      const initialRange = buildMonthWindowWithReportingStart(today, reportingStart);
+      setFromDate(initialRange.fromDate);
+      setToDate(initialRange.toDate);
+      loadData(initialRange.fromDate, initialRange.toDate, reportingStart);
+    };
+
+    loadInitialWorkspace();
   }, []);
 
   useEffect(() => {
@@ -881,7 +907,18 @@ export default function DataTab() {
         <div className="grid gap-4 xl:grid-cols-[1.1fr,1fr,auto] xl:items-end">
           <DateField label="From" value={fromDate} onChange={setFromDate} />
           <DateField label="To" value={toDate} onChange={setToDate} />
-          <ActionButton onClick={() => loadData()} busy={loading}>
+          <ActionButton
+            onClick={() => {
+              const nextRange = clampDateRangeToReportingStart(
+                fromDate,
+                toDate,
+                operationalStartDate,
+              );
+              setActivePreset("custom");
+              loadData(nextRange.fromDate, nextRange.toDate);
+            }}
+            busy={loading}
+          >
             Generate Data View
           </ActionButton>
         </div>
@@ -890,11 +927,16 @@ export default function DataTab() {
           <PresetButton
             active={activePreset === "today"}
             onClick={() => {
-              const range = buildPresetRange("today");
+              const rawRange = buildPresetRange("today");
+              const range = clampDateRangeToReportingStart(
+                rawRange.from,
+                rawRange.to,
+                operationalStartDate,
+              );
               setActivePreset("today");
-              setFromDate(range.from);
-              setToDate(range.to);
-              loadData(range.from, range.to);
+              setFromDate(range.fromDate);
+              setToDate(range.toDate);
+              loadData(range.fromDate, range.toDate);
             }}
           >
             Today
@@ -902,11 +944,16 @@ export default function DataTab() {
           <PresetButton
             active={activePreset === "week"}
             onClick={() => {
-              const range = buildPresetRange("week");
+              const rawRange = buildPresetRange("week");
+              const range = clampDateRangeToReportingStart(
+                rawRange.from,
+                rawRange.to,
+                operationalStartDate,
+              );
               setActivePreset("week");
-              setFromDate(range.from);
-              setToDate(range.to);
-              loadData(range.from, range.to);
+              setFromDate(range.fromDate);
+              setToDate(range.toDate);
+              loadData(range.fromDate, range.toDate);
             }}
           >
             Last 7 Days
@@ -914,11 +961,16 @@ export default function DataTab() {
           <PresetButton
             active={activePreset === "month"}
             onClick={() => {
-              const range = buildPresetRange("month");
+              const rawRange = buildPresetRange("month");
+              const range = clampDateRangeToReportingStart(
+                rawRange.from,
+                rawRange.to,
+                operationalStartDate,
+              );
               setActivePreset("month");
-              setFromDate(range.from);
-              setToDate(range.to);
-              loadData(range.from, range.to);
+              setFromDate(range.fromDate);
+              setToDate(range.toDate);
+              loadData(range.fromDate, range.toDate);
             }}
           >
             This Month
@@ -926,11 +978,16 @@ export default function DataTab() {
           <PresetButton
             active={activePreset === "30d"}
             onClick={() => {
-              const range = buildPresetRange("30d");
+              const rawRange = buildPresetRange("30d");
+              const range = clampDateRangeToReportingStart(
+                rawRange.from,
+                rawRange.to,
+                operationalStartDate,
+              );
               setActivePreset("30d");
-              setFromDate(range.from);
-              setToDate(range.to);
-              loadData(range.from, range.to);
+              setFromDate(range.fromDate);
+              setToDate(range.toDate);
+              loadData(range.fromDate, range.toDate);
             }}
           >
             Last 30 Days
@@ -938,11 +995,16 @@ export default function DataTab() {
           <PresetButton
             active={activePreset === "90d"}
             onClick={() => {
-              const range = buildPresetRange("90d");
+              const rawRange = buildPresetRange("90d");
+              const range = clampDateRangeToReportingStart(
+                rawRange.from,
+                rawRange.to,
+                operationalStartDate,
+              );
               setActivePreset("90d");
-              setFromDate(range.from);
-              setToDate(range.to);
-              loadData(range.from, range.to);
+              setFromDate(range.fromDate);
+              setToDate(range.toDate);
+              loadData(range.fromDate, range.toDate);
             }}
           >
             Last 90 Days
@@ -952,6 +1014,17 @@ export default function DataTab() {
         {error ? (
           <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
             {error}
+          </div>
+        ) : null}
+
+        {operationalStartDate ? (
+          <div className="mt-4 rounded-2xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+            Business intelligence starts from <span className="font-semibold text-white">{new Date(`${operationalStartDate}T00:00:00`).toLocaleDateString("en-IN", {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            })}</span>.
+            Any earlier date you pick is automatically clamped to that system baseline.
           </div>
         ) : null}
       </SectionCard>

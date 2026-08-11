@@ -225,6 +225,10 @@ export default function InventoryTab() {
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [operationalSettings, setOperationalSettings] = useState({
+    reporting_start_date: "",
+    inventory_last_zeroed_at: null,
+  });
 
   const draftBills = useMemo(
     () => bills.filter((bill) => bill.status === "DRAFT"),
@@ -443,6 +447,15 @@ export default function InventoryTab() {
     return res.data;
   };
 
+  const fetchOperationalSettings = async () => {
+    const res = await api.get("/system/operational-settings/");
+    setOperationalSettings({
+      reporting_start_date: res.data?.reporting_start_date || "",
+      inventory_last_zeroed_at: res.data?.inventory_last_zeroed_at || null,
+    });
+    return res.data;
+  };
+
   const resetDraftState = () => {
     setActiveBill(null);
     setEditingItemId(null);
@@ -491,6 +504,7 @@ export default function InventoryTab() {
         fetchStockOutLogs(),
         fetchLowStockItems(),
         fetchHistory(),
+        fetchOperationalSettings(),
       ]);
 
       await maybeResumeDraft(billList);
@@ -1345,8 +1359,27 @@ export default function InventoryTab() {
     });
   };
 
+  const handleSelectVisibleAlertLowStockExportItems = () => {
+    const visibleIds = exportCandidateInventoryItems
+      .filter((item) => item.is_low_stock || Number(item.quantity) === 0)
+      .map((item) => String(item.product));
+
+    setSelectedLowStockExportItems((current) => {
+      const merged = new Set([...current, ...visibleIds]);
+      return [...merged];
+    });
+  };
+
   const handleClearLowStockExportItems = () => {
     setSelectedLowStockExportItems([]);
+  };
+
+  const handleClearLowStockExportDemands = () => {
+    setLowStockExportDemandByProductId({});
+  };
+
+  const handleResetLowStockExportColumns = () => {
+    setLowStockExportColumns(defaultLowStockExportColumns());
   };
 
   const toggleLowStockExportColumn = (columnId) => {
@@ -1393,6 +1426,22 @@ export default function InventoryTab() {
           Open drafts: <span className="font-semibold text-white">{draftBills.length}</span>
         </div>
       </div>
+
+      {(operationalSettings.reporting_start_date || operationalSettings.inventory_last_zeroed_at) && (
+        <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-3 text-sm text-violet-100">
+          {operationalSettings.reporting_start_date ? (
+            <div>
+              System reporting start: <span className="font-semibold text-white">{formatDate(operationalSettings.reporting_start_date)}</span>
+            </div>
+          ) : null}
+          {operationalSettings.inventory_last_zeroed_at ? (
+            <div className="mt-1 text-violet-100/90">
+              Live inventory last reset to zero on{" "}
+              <span className="font-semibold text-white">{formatDateTime(operationalSettings.inventory_last_zeroed_at)}</span>.
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard label="Tracked Items" value={products.length} accent="blue" />
@@ -2107,8 +2156,17 @@ export default function InventoryTab() {
                     <SmallButton onClick={handleSelectVisibleLowStockExportItems} tone="secondary">
                       Select Matching Items
                     </SmallButton>
+                    <SmallButton onClick={handleSelectVisibleAlertLowStockExportItems} tone="secondary">
+                      Select Alert Items
+                    </SmallButton>
                     <SmallButton onClick={handleClearLowStockExportItems} tone="secondary">
                       Clear Selection
+                    </SmallButton>
+                    <SmallButton onClick={handleClearLowStockExportDemands} tone="secondary">
+                      Clear Demand Values
+                    </SmallButton>
+                    <SmallButton onClick={handleResetLowStockExportColumns} tone="secondary">
+                      Reset Columns
                     </SmallButton>
                   </div>
 

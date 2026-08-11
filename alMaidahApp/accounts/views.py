@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
@@ -7,13 +8,17 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from inventory.services import reset_inventory_snapshot_to_zero
 from .models import SPECIAL_ACCESS_CHOICES, UserProfile, TAB_PERMISSIONS, ensure_user_profile
+from .models import get_operational_settings
 from .permissions import AdminOnlyPermission
 from .serializers import (
     LoginSerializer,
     ManagedUserSerializer,
+    OperationalSettingsSerializer,
     PreferenceSerializer,
     UserProfileSerializer,
+    serialize_operational_settings,
     serialize_user_profile,
 )
 
@@ -173,3 +178,69 @@ class ManagedUserDetailAPIView(APIView):
 
         user.delete()
         return Response({"success": True})
+
+
+class OperationalSettingsAPIView(APIView):
+    authentication_classes = [TokenAuthentication]
+
+    def get(self, request):
+        settings_row = get_operational_settings()
+        return Response(OperationalSettingsSerializer(serialize_operational_settings(settings_row)).data)
+
+    def patch(self, request):
+        profile = ensure_user_profile(request.user)
+        if profile.effective_role != "ADMIN":
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = OperationalSettingsSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        settings_row = get_operational_settings()
+
+        if "reporting_start_date" in serializer.validated_data:
+            settings_row.reporting_start_date = serializer.validated_data["reporting_start_date"]
+            settings_row.save(update_fields=["reporting_start_date", "updated_at"])
+
+        return Response(OperationalSettingsSerializer(serialize_operational_settings(settings_row)).data)
+
+
+class OperationalBaselineResetAPIView(APIView):
+    authentication_classes = [TokenAuthentication]
+
+    def post(self, request):
+        profile = ensure_user_profile(request.user)
+        if profile.effective_role != "ADMIN":
+            return Response({"error": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = OperationalSettingsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        reporting_start_date = serializer.validated_data.get("reporting_start_date")
+        if not reporting_start_date:
+            return Response(
+                {"error": "Choose the new reporting start date first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reset_summary = reset_inventory_snapshot_to_zero()
+        settings_row = get_operational_settings()
+        settings_row.reporting_start_date = reporting_start_date
+        settings_row.inventory_last_zeroed_at = timezone.now()
+        settings_row.inventory_last_zeroed_by = request.user
+        settings_row.save(
+            update_fields=[
+                "reporting_start_date",
+                "inventory_last_zeroed_at",
+                "inventory_last_zeroed_by",
+                "updated_at",
+            ]
+        )
+
+        return Response(
+            {
+                "message": "Live inventory reset to zero and the system reporting start date was updated.",
+                "summary": reset_summary,
+                "settings": OperationalSettingsSerializer(serialize_operational_settings(settings_row)).data,
+            },
+            status=status.HTTP_200_OK,
+        )

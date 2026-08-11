@@ -335,11 +335,17 @@ export default function ManageOrdersTab({
   const [collectMethod, setCollectMethod] = useState("CASH");
   const [collectCashAmount, setCollectCashAmount] = useState("");
   const [collectOnlineAmount, setCollectOnlineAmount] = useState("");
+  const [collectError, setCollectError] = useState("");
+  const [collectChangePrompt, setCollectChangePrompt] = useState("");
+  const [collectBusy, setCollectBusy] = useState(false);
+  const [collectSuccessToast, setCollectSuccessToast] = useState("");
   const [showCollectDeniedToast, setShowCollectDeniedToast] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [completeName, setCompleteName] = useState("");
   const [completePhone, setCompletePhone] = useState("");
   const [completeAddress, setCompleteAddress] = useState("");
+  const [completeError, setCompleteError] = useState("");
+  const [completeBusy, setCompleteBusy] = useState(false);
   const [highlightedOrderId, setHighlightedOrderId] = useState(null);
 
   const [products, setProducts] = useState([]);
@@ -372,6 +378,41 @@ export default function ManageOrdersTab({
     window.setTimeout(() => {
       setShowCollectDeniedToast(false);
     }, 2200);
+  }
+
+  function resetCollectModalState() {
+    setCollectError("");
+    setCollectChangePrompt("");
+    setCollectBusy(false);
+  }
+
+  function closeCollectModal() {
+    setShowCollectModal(false);
+    setCollectCashAmount("");
+    setCollectOnlineAmount("");
+    resetCollectModalState();
+  }
+
+  function openCollectModalForOrder(order) {
+    setSelectedOrder(order);
+    setCollectAmount(order.remaining_amount || order.total_amount);
+    setCollectMethod("CASH");
+    setCollectCashAmount("");
+    setCollectOnlineAmount("");
+    resetCollectModalState();
+    setShowCollectModal(true);
+  }
+
+  function showCollectSuccessMessage(message) {
+    setCollectSuccessToast(message);
+    window.setTimeout(() => {
+      setCollectSuccessToast("");
+    }, 2200);
+  }
+
+  function resetCompleteModalState() {
+    setCompleteError("");
+    setCompleteBusy(false);
   }
 
   function openDeliveryLedgerForOrder(order) {
@@ -1154,17 +1195,19 @@ export default function ManageOrdersTab({
     }
 
   }
-async function submitCollectPayment(){
+async function submitCollectPayment(forceDeductChange = false){
   if(!canCollectPayments){
-    setShowCollectModal(false)
+    closeCollectModal()
     showCollectDeniedMessage()
     return
   }
 
+  setCollectError("")
+
   const amount = Number(collectAmount)
 
   if(amount <= 0){
-    alert("Enter valid amount")
+    setCollectError("Enter a valid collection amount first.")
     return
   }
 
@@ -1174,84 +1217,82 @@ async function submitCollectPayment(){
 
   if(collectMethod === "MIXED"){
     if(cashAmount < 0 || onlineAmount < 0){
-      alert("Enter valid mixed amounts")
+      setCollectError("Cash and online amounts cannot be negative.")
       return
     }
 
     const mixedTotal = cashAmount + onlineAmount
 
     if(mixedTotal <= 0){
-      alert("Enter cash and/or online amount")
+      setCollectError("Enter cash and/or online amount for this mixed payment.")
       return
     }
 
     if(Math.abs(mixedTotal - amount) > 0.009){
-      alert("Cash + Online must match the amount")
+      setCollectError("Cash plus online must exactly match the collection amount.")
       return
     }
   }
 
   if(amount < remainingAmount){
-    alert("Full remaining amount is required. Partial collection is disabled.")
+    setCollectError("Full remaining amount is required. Partial collection is disabled.")
     return
   }
 
   if(collectMethod === "ONLINE" && amount > remainingAmount){
-    alert("Online payment cannot exceed the remaining amount")
+    setCollectError("Online payment cannot exceed the remaining amount.")
     return
   }
 
   const changeAmount = amount - remainingAmount
 
   if(collectMethod === "MIXED" && changeAmount > cashAmount){
-    alert("Change can only be returned from the cash portion")
+    setCollectError("Change can only be returned from the cash portion.")
     return
   }
 
-  if(changeAmount > 0){
-    const confirmed = window.confirm(
-      `Deduct remaining ₹${changeAmount.toFixed(2)} you're giving back to the customer from cash drawer?`
+  if(changeAmount > 0 && !forceDeductChange){
+    setCollectChangePrompt(
+      `Customer paid ₹${changeAmount.toFixed(2)} extra. Confirm that this change will be given back from the cash drawer before recording payment.`
     )
+    return
+  }
 
-    if(!confirmed){
+  try {
+    setCollectBusy(true)
+
+    const res = await fetch(buildApiUrl(`orders/${selectedOrder.id}/collect-payment/`), {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        amount:amount,
+        payment_type:collectMethod,
+        cash_amount: collectMethod === "MIXED" ? cashAmount : 0,
+        online_amount: collectMethod === "MIXED" ? onlineAmount : 0,
+        deduct_change: changeAmount > 0
+      })
+    })
+
+    const data = await res.json()
+
+    if(res.status === 403){
+      closeCollectModal()
+      showCollectDeniedMessage()
       return
     }
-  }
 
-  const res = await fetch(buildApiUrl(`orders/${selectedOrder.id}/collect-payment/`), {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({
-      amount:amount,
-      payment_type:collectMethod,
-      cash_amount: collectMethod === "MIXED" ? cashAmount : 0,
-      online_amount: collectMethod === "MIXED" ? onlineAmount : 0,
-      deduct_change: changeAmount > 0
-    })
-  })
+    if(data.success){
+      closeCollectModal()
+      showCollectSuccessMessage(`Payment recorded for Order #${selectedOrder.id}.`)
+      fetchOrders()
+      return
+    }
 
-  const data = await res.json()
-
-  if(res.status === 403){
-    setShowCollectModal(false)
-    showCollectDeniedMessage()
-    return
-  }
-
-  if(data.success){
-
-    alert("Payment recorded")
-
-    setShowCollectModal(false)
-    setCollectCashAmount("")
-    setCollectOnlineAmount("")
-
-    fetchOrders()
-
-  }else{
-
-    alert(data.error || "Payment failed")
-
+    setCollectError(data.error || "Payment failed.")
+  } catch (error) {
+    setCollectError("Unable to record payment right now. Please try again.")
+  } finally {
+    setCollectBusy(false)
   }
 
 }
@@ -1306,9 +1347,50 @@ async function submitCollectPayment(){
   setCompleteName(selectedOrder.customer_name || "")
   setCompletePhone(selectedOrder.customer_phone || "")
   setCompleteAddress(selectedOrder.delivery_address || "")
+  resetCompleteModalState()
 
   setShowCompleteModal(true)
 
+ }
+
+ async function submitCompleteOrderLedgerAssignment(){
+  if(!completePhone.trim()){
+    setCompleteError("Phone is required so this unpaid balance can be linked to the right customer ledger.")
+    return
+  }
+
+  try {
+    setCompleteBusy(true)
+    setCompleteError("")
+
+    const res = await fetch(
+      buildApiUrl(`orders/${selectedOrder.id}/complete/`),
+      {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body:JSON.stringify({
+          name:completeName,
+          phone:completePhone,
+          address:completeAddress
+        })
+      }
+    )
+
+    const data = await res.json()
+
+    if(data.success){
+      setShowCompleteModal(false)
+      resetCompleteModalState()
+      fetchOrders()
+      return
+    }
+
+    setCompleteError(data.error || "Failed")
+  } catch (error) {
+    setCompleteError("Unable to complete this order right now. Please try again.")
+  } finally {
+    setCompleteBusy(false)
+  }
  }
 
 
@@ -1693,12 +1775,7 @@ async function submitCollectPayment(){
 		                      openDeliveryLedgerForOrder(order)
 		                      return
 		                    }
-		                    setSelectedOrder(order)
-		                    setCollectAmount(order.remaining_amount || order.total_amount)
-		                    setCollectMethod("CASH")
-		                    setCollectCashAmount("")
-	                    setCollectOnlineAmount("")
-	                    setShowCollectModal(true)
+		                    openCollectModalForOrder(order)
 	                  }}
 	                  className={`rounded-xl px-4 py-2 text-sm font-semibold ${canCollectPayments ? "bg-purple-600 text-white" : "border border-slate-600 bg-slate-700 text-slate-200"}`}
 	                >
@@ -1945,16 +2022,11 @@ async function submitCollectPayment(){
 		                        showCollectDeniedMessage();
 		                        return;
 		                      }
-		                      if (order.order_type === "DELIVERY") {
-		                        openDeliveryLedgerForOrder(order);
-		                        return;
-		                      }
-		                      setSelectedOrder(order);
-		                      setCollectAmount(order.remaining_amount || order.total_amount);
-		                      setCollectMethod("CASH");
-		                      setCollectCashAmount("");
-	                      setCollectOnlineAmount("");
-	                      setShowCollectModal(true);
+	                      if (order.order_type === "DELIVERY") {
+	                        openDeliveryLedgerForOrder(order);
+	                        return;
+	                      }
+	                      openCollectModalForOrder(order);
 	                    }}
 	                    className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
 	                      canCollectPayments
@@ -2682,80 +2754,166 @@ Update Order
 
 {showCollectModal && selectedOrder && (
 
-<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
+<div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
 
-<div className="w-full max-w-md rounded-xl bg-gray-900 p-6">
+<div className="w-full max-w-lg rounded-[30px] border border-slate-800 bg-slate-950 p-6 text-white shadow-[0_30px_100px_rgba(2,6,23,0.78)]">
 
-<div className="flex justify-between mb-4">
+<div className="flex items-start justify-between gap-4">
 
-<h2 className="text-lg font-bold">
-Collect Payment (Order #{selectedOrder.id})
+<div>
+<div className="text-[11px] font-semibold uppercase tracking-[0.32em] text-emerald-300">
+Payment Collection
+</div>
+<h2 className="mt-3 text-2xl font-semibold">
+Collect Payment For Order #{selectedOrder.id}
 </h2>
+<div className="mt-2 text-sm text-slate-400">
+Record the final payment cleanly here. Partial collection is disabled for direct order collection.
+</div>
+</div>
 
 <button
-onClick={()=>setShowCollectModal(false)}
-className="text-red-400"
+onClick={closeCollectModal}
+className="rounded-full border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
 >
-✕
+Close
 </button>
 
 </div>
 
-	<div className="space-y-4">
+<div className="mt-5 grid gap-3 sm:grid-cols-3">
+<div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3">
+<div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Remaining</div>
+<div className="mt-2 text-xl font-semibold text-white">₹{formatMoney(selectedOrder.remaining_amount || selectedOrder.total_amount)}</div>
+</div>
+<div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3">
+<div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Paid So Far</div>
+<div className="mt-2 text-xl font-semibold text-cyan-200">₹{formatMoney(selectedOrder.amount_paid || 0)}</div>
+</div>
+<div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3">
+<div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Payment Mode</div>
+<div className="mt-2 text-xl font-semibold text-emerald-200">{collectMethod}</div>
+</div>
+</div>
 
-	<div className="text-sm text-gray-300">
-	Remaining Amount: ₹{selectedOrder.remaining_amount || selectedOrder.total_amount}
-	</div>
-
-	<input
-	type="number"
+<div className="mt-5 space-y-4">
+<div>
+<label className="mb-2 block text-sm text-slate-300">Collected Amount</label>
+<input
+type="number"
 value={collectAmount}
-onChange={(e)=>setCollectAmount(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCollectAmount(e.target.value)
+  setCollectError("")
+  setCollectChangePrompt("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
+placeholder="Enter final collected amount"
 />
+</div>
 
+<div>
+<label className="mb-2 block text-sm text-slate-300">Method</label>
 <select
 value={collectMethod}
-onChange={(e)=>setCollectMethod(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCollectMethod(e.target.value)
+  setCollectError("")
+  setCollectChangePrompt("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 >
 <option value="CASH">Cash</option>
 <option value="ONLINE">Online</option>
 <option value="MIXED">Mixed</option>
 </select>
+</div>
 
 	{collectMethod === "MIXED" && (
 	<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 
+<div>
+<label className="mb-2 block text-sm text-slate-300">Cash Amount</label>
 <input
 type="number"
-placeholder="Cash Amount"
+placeholder="Cash amount"
 value={collectCashAmount}
-onChange={(e)=>setCollectCashAmount(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCollectCashAmount(e.target.value)
+  setCollectError("")
+  setCollectChangePrompt("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 />
+</div>
 
+<div>
+<label className="mb-2 block text-sm text-slate-300">Online Amount</label>
 <input
 type="number"
-placeholder="Online Amount"
+placeholder="Online amount"
 value={collectOnlineAmount}
-onChange={(e)=>setCollectOnlineAmount(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCollectOnlineAmount(e.target.value)
+  setCollectError("")
+  setCollectChangePrompt("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 />
+</div>
 
 	</div>
 	)}
 
-	<div className="text-xs text-gray-400">
-	Less than the remaining amount is not allowed.
+	<div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-xs leading-6 text-slate-400">
+	Less than the remaining amount is not allowed here. If the customer pays more than the balance, we will confirm that the extra amount is being returned as change from cash.
 	</div>
 
+  {collectError ? (
+    <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+      {collectError}
+    </div>
+  ) : null}
+
+  {collectChangePrompt ? (
+    <div className="rounded-3xl border border-amber-400/25 bg-amber-400/10 p-4">
+      <div className="text-sm font-semibold text-amber-100">Confirm change handling</div>
+      <div className="mt-2 text-sm leading-6 text-slate-200">{collectChangePrompt}</div>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+        <button
+          onClick={() => submitCollectPayment(true)}
+          disabled={collectBusy}
+          className="rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300 disabled:opacity-70"
+        >
+          {collectBusy ? "Recording..." : "Yes, record payment"}
+        </button>
+        <button
+          onClick={() => setCollectChangePrompt("")}
+          disabled={collectBusy}
+          className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+        >
+          Edit Amounts
+        </button>
+      </div>
+    </div>
+  ) : null}
+
+	<div className="flex flex-col gap-3 sm:flex-row">
 	<button
-onClick={submitCollectPayment}
-className="w-full bg-green-600 py-3 rounded"
+onClick={()=>submitCollectPayment(false)}
+disabled={collectBusy}
+className="flex-1 rounded-2xl bg-emerald-500 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
 >
-Confirm Payment
+{collectBusy ? "Recording..." : "Confirm Payment"}
 </button>
+<button
+onClick={closeCollectModal}
+disabled={collectBusy}
+className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+>
+Cancel
+</button>
+	</div>
 
 </div>
 
@@ -2794,95 +2952,127 @@ You don&apos;t have the right to collect payments
 </div>
 )}
 
+{collectSuccessToast && (
+<div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-[2px]">
+<div className="w-full max-w-md rounded-[28px] border border-emerald-500/30 bg-slate-950/95 px-8 py-8 text-center shadow-[0_30px_90px_rgba(15,23,42,0.6)]">
+<div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-emerald-400/30 bg-emerald-500/10 text-emerald-200">
+<svg
+viewBox="0 0 24 24"
+fill="none"
+stroke="currentColor"
+strokeWidth="1.8"
+className="h-12 w-12"
+aria-hidden="true"
+>
+<path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
+</svg>
+</div>
+<div className="mt-5 text-[11px] font-semibold uppercase tracking-[0.34em] text-emerald-300">
+Payment Recorded
+</div>
+<div className="mt-3 text-xl font-semibold text-white">
+{collectSuccessToast}
+</div>
+</div>
+</div>
+)}
+
 
 {/* COMPLETE MODAL */}
 
 {showCompleteModal && selectedOrder && (
 
-<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
+<div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
 
-<div className="w-full max-w-md rounded-xl bg-gray-900 p-6">
+<div className="w-full max-w-lg rounded-[30px] border border-slate-800 bg-slate-950 p-6 text-white shadow-[0_30px_100px_rgba(2,6,23,0.78)]">
 
-<div className="flex justify-between mb-4">
+<div className="flex items-start justify-between gap-4">
 
-<h2 className="text-lg font-bold">
+<div>
+<div className="text-[11px] font-semibold uppercase tracking-[0.32em] text-amber-300">
+Ledger Assignment
+</div>
+<h2 className="mt-3 text-2xl font-semibold">
 Complete Order #{selectedOrder.id}
 </h2>
+<div className="mt-2 text-sm text-slate-400">
+This order is unpaid, so the remaining balance will be assigned to the customer ledger.
+</div>
+</div>
 
 <button
-onClick={()=>setShowCompleteModal(false)}
-className="text-red-400"
+onClick={()=>{
+  setShowCompleteModal(false)
+  resetCompleteModalState()
+}}
+className="rounded-full border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
 >
-✕
+Close
 </button>
 
 </div>
 
-<div className="space-y-3">
+<div className="mt-5 space-y-4">
 
-<div className="text-sm text-gray-300">
-Order is unpaid. Assign this balance to customer ledger.
+<div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-sm text-slate-300">
+Remaining unpaid amount: <span className="font-semibold text-white">₹{formatMoney(selectedOrder.remaining_amount || selectedOrder.total_amount)}</span>
 </div>
 
 <input
 placeholder="Customer Name"
 value={completeName}
-onChange={(e)=>setCompleteName(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCompleteName(e.target.value)
+  setCompleteError("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 />
 
 <input
 placeholder="Phone"
 value={completePhone}
-onChange={(e)=>setCompletePhone(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCompletePhone(e.target.value)
+  setCompleteError("")
+}}
+className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 />
 
 <textarea
 placeholder="Address"
 value={completeAddress}
-onChange={(e)=>setCompleteAddress(e.target.value)}
-className="w-full p-2 rounded bg-gray-800"
+onChange={(e)=>{
+  setCompleteAddress(e.target.value)
+  setCompleteError("")
+}}
+className="min-h-[110px] w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
 />
 
+{completeError ? (
+  <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+    {completeError}
+  </div>
+) : null}
+
+<div className="flex flex-col gap-3 sm:flex-row">
 <button
-onClick={async ()=>{
-
-if(!completePhone){
-alert("Phone required")
-return
-}
-
-const res = await fetch(
-buildApiUrl(`orders/${selectedOrder.id}/complete/`),
-{
-method:"POST",
-headers:{ "Content-Type":"application/json" },
-body:JSON.stringify({
-name:completeName,
-phone:completePhone,
-address:completeAddress
-})
-}
-)
-
-const data = await res.json()
-
-if(data.success){
-
-setShowCompleteModal(false)
-
-fetchOrders()
-
-}else{
-alert(data.error || "Failed")
-}
-
-}}
-className="w-full bg-green-600 py-3 rounded"
+onClick={submitCompleteOrderLedgerAssignment}
+disabled={completeBusy}
+className="flex-1 rounded-2xl bg-emerald-500 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
 >
-Complete Order
+{completeBusy ? "Completing..." : "Complete Order"}
 </button>
+<button
+onClick={()=>{
+  setShowCompleteModal(false)
+  resetCompleteModalState()
+}}
+disabled={completeBusy}
+className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+>
+Cancel
+</button>
+</div>
 
 </div>
 
@@ -3007,33 +3197,35 @@ Not Cooked
 
 {showLedgerWarning && selectedOrder && (
 
-<div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
+<div className="fixed inset-0 z-[64] flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
 
-  <div className="w-full max-w-md rounded-xl bg-gray-900 p-6 text-white">
+  <div className="w-full max-w-md rounded-[28px] border border-slate-800 bg-slate-950 p-6 text-white shadow-[0_30px_90px_rgba(15,23,42,0.6)]">
 
-    <h2 className="text-lg font-bold mb-3">
+    <div className="text-[11px] font-semibold uppercase tracking-[0.32em] text-amber-300">
       Unpaid Order
+    </div>
+    <h2 className="mt-3 text-2xl font-semibold">
+      Send Balance To Ledger?
     </h2>
 
-    <p className="text-gray-300 mb-6">
-      This order has not been paid.
-      The balance will be assigned to the customer's ledger.
+    <p className="mt-3 text-sm leading-7 text-slate-300">
+      This order has not been paid. Completing it now will move the remaining balance to the customer ledger so collection can happen later from ledger.
     </p>
 
-    <div className="flex gap-3">
+    <div className="mt-6 flex gap-3">
 
       <button
         onClick={()=>setShowLedgerWarning(false)}
-        className="flex-1 bg-gray-700 py-2 rounded"
+        className="flex-1 rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
       >
         Cancel
       </button>
 
       <button
         onClick={confirmLedgerAssign}
-        className="flex-1 bg-green-600 py-2 rounded"
+        className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400"
       >
-        Confirm
+        Continue
       </button>
 
     </div>

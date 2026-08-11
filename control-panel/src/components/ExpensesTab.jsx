@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
 import { InlineButtonContent, InlineLoaderLabel } from "./SystemLoader";
+import { buildMonthWindowWithReportingStart } from "../utils/operationalSettings";
 
 const PAYMENT_MODE_OPTIONS = [
   {
@@ -101,6 +102,18 @@ function buildQueryParams(filters) {
   });
 
   return params;
+}
+
+function buildDefaultFilters(reportingStartDate = "") {
+  const initialRange = buildMonthWindowWithReportingStart(today, reportingStartDate);
+
+  return {
+    search: "",
+    category: "",
+    payment_mode: "",
+    start_date: initialRange.fromDate,
+    end_date: initialRange.toDate,
+  };
 }
 
 function CategoryModal({
@@ -204,15 +217,10 @@ function CategoryModal({
 }
 
 export default function ExpensesTab() {
+  const [operationalStartDate, setOperationalStartDate] = useState("");
   const defaultFilters = useMemo(
-    () => ({
-      search: "",
-      category: "",
-      payment_mode: "",
-      start_date: getMonthStart(),
-      end_date: today,
-    }),
-    [],
+    () => buildDefaultFilters(operationalStartDate),
+    [operationalStartDate],
   );
 
   const [categories, setCategories] = useState([]);
@@ -230,8 +238,8 @@ export default function ExpensesTab() {
     expenses: [],
   });
 
-  const [filters, setFilters] = useState(defaultFilters);
-  const [draftFilters, setDraftFilters] = useState(defaultFilters);
+  const [filters, setFilters] = useState(buildDefaultFilters());
+  const [draftFilters, setDraftFilters] = useState(buildDefaultFilters());
 
   const [categoryForm, setCategoryForm] = useState({
     name: "",
@@ -260,6 +268,27 @@ export default function ExpensesTab() {
     [categories],
   );
 
+  const recentExpenseTemplates = useMemo(() => {
+    const seen = new Set();
+
+    return (expensesData.expenses || [])
+      .filter((expense) => {
+        const key = [
+          expense.category,
+          expense.payment_mode,
+          (expense.description || "").trim().toLowerCase(),
+        ].join("::");
+
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 4);
+  }, [expensesData.expenses]);
+
   const fetchCategories = async () => {
     const response = await api.get("/expensescategory/", {
       params: { include_inactive: 1 },
@@ -286,7 +315,20 @@ export default function ExpensesTab() {
   useEffect(() => {
     const load = async () => {
       try {
-        await Promise.all([fetchCategories(), fetchDashboard(filters)]);
+        let reportingStart = "";
+
+        try {
+          const response = await api.get("/system/operational-settings/");
+          reportingStart = response.data?.reporting_start_date || "";
+          setOperationalStartDate(reportingStart);
+        } catch {
+          reportingStart = "";
+        }
+
+        const initialFilters = buildDefaultFilters(reportingStart);
+        setFilters(initialFilters);
+        setDraftFilters(initialFilters);
+        await Promise.all([fetchCategories(), fetchDashboard(initialFilters)]);
       } catch {
         setError("Failed to load expenses workspace.");
       }
@@ -342,6 +384,14 @@ export default function ExpensesTab() {
         ...nextFilters,
         start_date: "",
         end_date: "",
+      };
+    }
+
+    if (range === "system") {
+      nextFilters = {
+        ...nextFilters,
+        start_date: operationalStartDate || getMonthStart(),
+        end_date: today,
       };
     }
 
@@ -556,6 +606,13 @@ export default function ExpensesTab() {
             </div>
           </div>
         </div>
+
+        {operationalStartDate ? (
+          <div className="mt-4 rounded-2xl border border-violet-500/25 bg-violet-500/10 px-4 py-3 text-sm text-violet-100">
+            This tab respects the system reporting start date of <span className="font-semibold text-white">{formatDate(operationalStartDate)}</span>.
+            Use <span className="font-semibold text-white">Since System Start</span> to jump straight to the clean reporting window.
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -716,6 +773,46 @@ export default function ExpensesTab() {
               </InlineButtonContent>
             </button>
           </div>
+
+          {recentExpenseTemplates.length ? (
+            <div className="mt-5 rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white">Quick Reuse</div>
+                  <div className="mt-1 text-xs uppercase tracking-[0.22em] text-slate-500">
+                    Recent patterns
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500">One tap fills the form</div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {recentExpenseTemplates.map((expense) => (
+                  <button
+                    key={`template-${expense.id}`}
+                    type="button"
+                    onClick={() => useExpenseAsTemplate(expense)}
+                    className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-4 text-left transition hover:border-emerald-500/40 hover:bg-slate-950"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white">{expense.category_name}</div>
+                        <div className="mt-1 text-sm text-slate-400">
+                          {expense.description || "No note"}
+                        </div>
+                      </div>
+                      <div className="rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-300">
+                        {expense.payment_mode_display}
+                      </div>
+                    </div>
+                    <div className="mt-3 text-sm font-semibold text-emerald-300">
+                      {formatCurrency(expense.amount)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="space-y-6">
@@ -971,6 +1068,14 @@ export default function ExpensesTab() {
             >
               All Time
             </button>
+            {operationalStartDate ? (
+              <button
+                onClick={() => applyQuickRange("system")}
+                className="rounded-full border border-violet-500/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100 transition hover:border-violet-400 hover:bg-violet-500/15"
+              >
+                Since System Start
+              </button>
+            ) : null}
           </div>
 
           <div className="flex gap-3">

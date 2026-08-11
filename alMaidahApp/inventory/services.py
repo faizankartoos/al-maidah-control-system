@@ -228,6 +228,25 @@ def create_stock_adjustment(*, product, quantity_change, reason, unit_cost=None)
     return adjustment, inventory
 
 
+@transaction.atomic
+def reset_inventory_snapshot_to_zero():
+    inventory_rows = list(Inventory.objects.select_for_update().select_related("product").all())
+    reset_items_count = 0
+
+    for inventory in inventory_rows:
+        if inventory.quantity != 0 or inventory.total_value != 0:
+            reset_items_count += 1
+
+        inventory.quantity = Decimal("0.00")
+        inventory.total_value = Decimal("0.00")
+        inventory.save(update_fields=["quantity", "total_value", "updated_at"])
+
+    return {
+        "inventory_items_count": len(inventory_rows),
+        "reset_items_count": reset_items_count,
+    }
+
+
 def list_low_stock_items():
     rows = []
 

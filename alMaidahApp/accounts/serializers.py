@@ -3,6 +3,7 @@ from rest_framework import serializers
 
 from .models import (
     ALL_ACCESS_KEYS,
+    OperationalSettings,
     SPECIAL_ACCESS_CHOICES,
     SPECIAL_ACCESS_KEYS,
     TAB_PERMISSIONS,
@@ -38,6 +39,30 @@ def serialize_user_profile(user):
     }
 
 
+def resolve_user_display_name(user):
+    if not user:
+        return None
+
+    profile = getattr(user, "profile", None)
+    display_name = (getattr(profile, "display_name", "") or "").strip()
+    if display_name:
+        return display_name
+
+    full_name = user.get_full_name().strip()
+    if full_name:
+        return full_name
+
+    return user.username
+
+
+def serialize_operational_settings(settings_row: OperationalSettings):
+    return {
+        "reporting_start_date": settings_row.reporting_start_date,
+        "inventory_last_zeroed_at": settings_row.inventory_last_zeroed_at,
+        "inventory_last_zeroed_by_name": resolve_user_display_name(settings_row.inventory_last_zeroed_by),
+    }
+
+
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(style={"input_type": "password"})
@@ -54,6 +79,12 @@ class UserProfileSerializer(serializers.Serializer):
     font_preference = serializers.CharField(read_only=True)
     is_active = serializers.BooleanField(read_only=True)
     is_superuser = serializers.BooleanField(read_only=True)
+
+
+class OperationalSettingsSerializer(serializers.Serializer):
+    reporting_start_date = serializers.DateField(allow_null=True, required=False)
+    inventory_last_zeroed_at = serializers.DateTimeField(read_only=True)
+    inventory_last_zeroed_by_name = serializers.CharField(read_only=True, allow_null=True)
 
 
 class PreferenceSerializer(serializers.Serializer):

@@ -13,6 +13,7 @@ from expenses.models import Expense, ExpenseCategory
 from inventory.models import Inventory, Product, StockOutLog, PurchaseBill, PurchaseItem
 from ledger.models import LedgerAccount, LedgerEntry
 from orders.models import Order, OrderItem, OrderPayment
+from accounts.models import get_operational_settings
 
 
 class ReportsDashboardTests(TestCase):
@@ -343,6 +344,41 @@ class ReportsDashboardTests(TestCase):
             breakdown["marketing_expense_summary"]["matched_categories"],
             ["Marketing"],
         )
+
+    def test_dashboard_report_respects_system_reporting_start_date(self):
+        settings_row = get_operational_settings()
+        settings_row.reporting_start_date = self.today
+        settings_row.save(update_fields=["reporting_start_date", "updated_at"])
+
+        old_order = Order.objects.create(
+            order_type="TAKEAWAY",
+            order_status="COMPLETED",
+            payment_status="PAID",
+            customer_name="Earlier Customer",
+            customer_phone="7000000051",
+            total_amount=Decimal("999.00"),
+            completed_at=self.now - timedelta(days=1),
+        )
+        OrderItem.objects.create(
+            order=old_order,
+            item_name="Old Burger",
+            quantity=1,
+            price=Decimal("999.00"),
+        )
+
+        response = self.client.get(
+            "/api/reports/dashboard/",
+            {
+                "from_date": (self.today - timedelta(days=3)).isoformat(),
+                "to_date": self.today.isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(self._decimal(payload["summary"]["gross_revenue"]), Decimal("120.00"))
+        self.assertEqual(payload["summary"]["completed_orders"], 1)
 
     def test_profit_report_falls_back_to_keyword_matching_when_generic_category_is_used(self):
         variable = ExpenseCategory.objects.create(name="Variable")

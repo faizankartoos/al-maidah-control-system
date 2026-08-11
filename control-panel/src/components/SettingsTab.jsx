@@ -14,6 +14,69 @@ function formatMoney(value) {
   });
 }
 
+function formatDateLabel(value) {
+  if (!value) {
+    return "Not set";
+  }
+
+  return new Date(`${value}T00:00:00`).toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatDateTimeLabel(value) {
+  if (!value) {
+    return "Never";
+  }
+
+  return new Date(value).toLocaleString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function getErrorMessage(error, fallback) {
+  const data = error?.response?.data;
+
+  if (!data) {
+    return fallback;
+  }
+
+  if (typeof data === "string") {
+    return data;
+  }
+
+  if (typeof data.error === "string") {
+    return data.error;
+  }
+
+  if (typeof data.detail === "string") {
+    return data.detail;
+  }
+
+  const firstKey = Object.keys(data)[0];
+  if (!firstKey) {
+    return fallback;
+  }
+
+  const firstValue = data[firstKey];
+  if (Array.isArray(firstValue) && firstValue.length) {
+    return firstValue[0];
+  }
+
+  if (typeof firstValue === "string") {
+    return firstValue;
+  }
+
+  return fallback;
+}
+
 function emptyDeliveryBoyForm() {
   return {
     name: "",
@@ -44,9 +107,21 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
   const [bulkCollectPaymentType, setBulkCollectPaymentType] = useState("CASH");
   const [bulkCollecting, setBulkCollecting] = useState(false);
   const [bulkCollectSummary, setBulkCollectSummary] = useState(null);
+  const [operationalSettings, setOperationalSettings] = useState({
+    reporting_start_date: "",
+    inventory_last_zeroed_at: null,
+    inventory_last_zeroed_by_name: "",
+  });
+  const [operationalDateDraft, setOperationalDateDraft] = useState(today);
+  const [savingOperationalDate, setSavingOperationalDate] = useState(false);
+  const [resettingOperationalBaseline, setResettingOperationalBaseline] = useState(false);
+  const [confirmingOperationalReset, setConfirmingOperationalReset] = useState(false);
+  const [operationalResetSummary, setOperationalResetSummary] = useState(null);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  const isAdmin = currentUser?.role === "ADMIN";
 
   useEffect(() => {
     loadSettings();
@@ -80,14 +155,26 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
     setBoyDrafts(drafts);
   }
 
+  function syncOperationalSettings(nextSettings) {
+    const normalized = {
+      reporting_start_date: nextSettings?.reporting_start_date || "",
+      inventory_last_zeroed_at: nextSettings?.inventory_last_zeroed_at || null,
+      inventory_last_zeroed_by_name: nextSettings?.inventory_last_zeroed_by_name || "",
+    };
+
+    setOperationalSettings(normalized);
+    setOperationalDateDraft(normalized.reporting_start_date || today);
+  }
+
   async function loadSettings() {
     try {
       setLoading(true);
       setError("");
 
-      const [areasResponse, boysResponse] = await Promise.all([
+      const [areasResponse, boysResponse, operationalResponse] = await Promise.all([
         api.get("/settings/delivery-areas/"),
         api.get("/settings/delivery-boys/"),
+        api.get("/system/operational-settings/"),
       ]);
 
       const nextAreas = areasResponse.data || [];
@@ -97,6 +184,7 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
       setDeliveryBoys(nextBoys);
       primeAreaDrafts(nextAreas);
       primeBoyDrafts(nextBoys);
+      syncOperationalSettings(operationalResponse.data || {});
     } catch (err) {
       setError(err?.response?.data?.error || "Unable to load settings right now.");
     } finally {
@@ -251,6 +339,90 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
     }
   }
 
+  async function saveOperationalReportingDate() {
+    if (!isAdmin) {
+      setError("Admin access is required for operational reset controls.");
+      return;
+    }
+
+    try {
+      setSavingOperationalDate(true);
+      setError("");
+      setSuccess("");
+      setOperationalResetSummary(null);
+
+      const response = await api.patch("/system/operational-settings/", {
+        reporting_start_date: operationalDateDraft || null,
+      });
+
+      syncOperationalSettings(response.data || {});
+      setConfirmingOperationalReset(false);
+      setSuccess("System reporting start date updated.");
+    } catch (err) {
+      setError(err?.response?.data?.error || "Unable to update the reporting start date.");
+    } finally {
+      setSavingOperationalDate(false);
+    }
+  }
+
+  async function runOperationalBaselineReset() {
+    if (!isAdmin) {
+      setError("Admin access is required for operational reset controls.");
+      return;
+    }
+
+    if (!operationalDateDraft) {
+      setError("Choose the new reporting start date first.");
+      return;
+    }
+
+    try {
+      setResettingOperationalBaseline(true);
+      setError("");
+      setSuccess("");
+
+      const response = await api.post("/system/operational-baseline-reset/", {
+        reporting_start_date: operationalDateDraft,
+      });
+
+      syncOperationalSettings(response.data?.settings || {});
+      setOperationalResetSummary(response.data?.summary || null);
+      setConfirmingOperationalReset(false);
+      setSuccess(
+        response.data?.message ||
+          "Live inventory was reset to zero and the reporting start date was updated.",
+      );
+    } catch (err) {
+      try {
+        const verificationResponse = await api.get("/system/operational-settings/");
+        const verifiedSettings = verificationResponse.data || {};
+        const baselineWasUpdated =
+          verifiedSettings.reporting_start_date === operationalDateDraft &&
+          Boolean(verifiedSettings.inventory_last_zeroed_at);
+
+        if (baselineWasUpdated) {
+          syncOperationalSettings(verifiedSettings);
+          setConfirmingOperationalReset(false);
+          setOperationalResetSummary((current) => current || {
+            inventory_items_count: 0,
+            reset_items_count: 0,
+          });
+          setError("");
+          setSuccess(
+            "Live inventory reset completed. The original response did not finish cleanly, but the new system baseline is saved.",
+          );
+          return;
+        }
+      } catch {
+        // Fall through to the original error message below.
+      }
+
+      setError(getErrorMessage(err, "Unable to reset the live inventory right now."));
+    } finally {
+      setResettingOperationalBaseline(false);
+    }
+  }
+
   if (loading) {
     return (
       <PanelLoader
@@ -356,7 +528,7 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
         ) : null}
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-3">
+      <div className="grid gap-5 xl:grid-cols-4">
         <SettingsLauncherCard
           eyebrow="Delivery Rates"
           title="Delivery charges"
@@ -385,6 +557,20 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
           actionLabel="Open bulk collect"
           accent="amber"
           onClick={() => setActiveWindow("collect")}
+        />
+
+        <SettingsLauncherCard
+          eyebrow="Operational Reset"
+          title="Reporting baseline"
+          description="Choose the system-wide reporting start date and, when needed, reset the live inventory snapshot to zero without deleting products or order history."
+          stats={
+            operationalSettings.reporting_start_date
+              ? `Starts from ${formatDateLabel(operationalSettings.reporting_start_date)}`
+              : "Not set yet"
+          }
+          actionLabel="Open baseline controls"
+          accent="violet"
+          onClick={() => setActiveWindow("operations")}
         />
       </div>
 
@@ -775,6 +961,147 @@ export default function SettingsTab({ currentUser, onPreferenceChange, preferenc
           </div>
         </SettingsModal>
       ) : null}
+
+      {activeWindow === "operations" ? (
+        <SettingsModal title="Operational Reset & Reporting Baseline" onClose={() => setActiveWindow(null)}>
+          <SettingsFeedback error={error} success={success} />
+
+          <div className="space-y-5">
+            <div>
+              <div className="text-lg font-semibold text-white">System-wide reporting baseline</div>
+              <div className="mt-1 text-sm text-slate-400">
+                Use this when you want reporting to start fresh from a chosen date while keeping orders,
+                customers, products, purchase history, and expense history intact.
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-3">
+              <MiniSummaryCard
+                label="Current Start Date"
+                value={operationalSettings.reporting_start_date ? formatDateLabel(operationalSettings.reporting_start_date) : "Not set"}
+              />
+              <MiniSummaryCard
+                label="Inventory Last Zeroed"
+                value={formatDateTimeLabel(operationalSettings.inventory_last_zeroed_at)}
+                tone="warning"
+              />
+              <MiniSummaryCard
+                label="Last Zeroed By"
+                value={operationalSettings.inventory_last_zeroed_by_name || "Not recorded"}
+                tone="neutral"
+              />
+            </div>
+
+            <div className="rounded-3xl border border-violet-500/20 bg-violet-500/10 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.24em] text-violet-200">
+                What This Changes
+              </div>
+              <div className="mt-3 space-y-2 text-sm leading-7 text-slate-200">
+                <div>Changing the reporting start date makes reports and data views calculate from that date onward.</div>
+                <div>Resetting live inventory sets current quantity and current stock value to zero for every inventory item.</div>
+                <div>Products, units, alert thresholds, purchase bills, old orders, ledgers, and expenses stay preserved.</div>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,280px)_1fr] lg:items-end">
+                <div>
+                  <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Reporting Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={operationalDateDraft}
+                    onChange={(event) => {
+                      setOperationalDateDraft(event.target.value);
+                      setConfirmingOperationalReset(false);
+                    }}
+                    className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-violet-400"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
+                  {operationalDateDraft
+                    ? `Every report will start from ${formatDateLabel(operationalDateDraft)} until you change it again.`
+                    : "Choose a date to start a fresh reporting window."}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-col gap-3 lg:flex-row">
+                <button
+                  onClick={saveOperationalReportingDate}
+                  disabled={savingOperationalDate || !isAdmin}
+                  className="rounded-2xl bg-violet-400 px-5 py-3 font-semibold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <InlineButtonContent busy={savingOperationalDate} busyLabel="Saving...">
+                    Save start date only
+                  </InlineButtonContent>
+                </button>
+
+                <button
+                  onClick={() => setConfirmingOperationalReset((current) => !current)}
+                  disabled={resettingOperationalBaseline || !isAdmin}
+                  className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-5 py-3 font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Reset live inventory to zero
+                </button>
+              </div>
+
+              {!isAdmin ? (
+                <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  Admin access is required to change the baseline or reset live inventory.
+                </div>
+              ) : null}
+
+              {confirmingOperationalReset ? (
+                <div className="mt-4 rounded-3xl border border-rose-500/25 bg-rose-500/10 p-4">
+                  <div className="text-sm font-semibold text-rose-100">Confirm inventory reset</div>
+                  <div className="mt-2 text-sm leading-7 text-slate-200">
+                    This will set every current inventory quantity and current stock value to zero, then start
+                    reports from <span className="font-semibold text-white">{formatDateLabel(operationalDateDraft || today)}</span>.
+                  </div>
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      onClick={runOperationalBaselineReset}
+                      disabled={resettingOperationalBaseline}
+                      className="rounded-2xl bg-rose-500 px-5 py-3 font-semibold text-white transition hover:bg-rose-400 disabled:opacity-60"
+                    >
+                      <InlineButtonContent busy={resettingOperationalBaseline} busyLabel="Resetting...">
+                        Yes, reset inventory now
+                      </InlineButtonContent>
+                    </button>
+                    <button
+                      onClick={() => setConfirmingOperationalReset(false)}
+                      disabled={resettingOperationalBaseline}
+                      className="rounded-2xl border border-slate-700 px-5 py-3 font-semibold text-slate-200 transition hover:border-slate-500"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {operationalResetSummary ? (
+              <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+                <div className="text-sm font-semibold text-emerald-100">Last reset summary</div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <MiniSummaryCard
+                    label="Inventory Items Found"
+                    value={operationalResetSummary.inventory_items_count ?? 0}
+                    tone="success"
+                  />
+                  <MiniSummaryCard
+                    label="Items Reset"
+                    value={operationalResetSummary.reset_items_count ?? 0}
+                    tone="success"
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </SettingsModal>
+      ) : null}
     </div>
   );
 }
@@ -806,6 +1133,7 @@ function SettingsLauncherCard({ eyebrow, title, description, stats, actionLabel,
     emerald: "border-emerald-500/20 bg-emerald-500/10 text-emerald-200",
     sky: "border-sky-500/20 bg-sky-500/10 text-sky-200",
     amber: "border-amber-500/20 bg-amber-500/10 text-amber-200",
+    violet: "border-violet-500/20 bg-violet-500/10 text-violet-200",
   };
 
   return (
