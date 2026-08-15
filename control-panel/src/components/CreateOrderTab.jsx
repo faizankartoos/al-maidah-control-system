@@ -117,6 +117,7 @@ export default function OrdersTab({ externalMode = false }) {
   const [paymentOnlineAmount,setPaymentOnlineAmount] = useState("")
   const [partialPaymentEnabled, setPartialPaymentEnabled] = useState(false)
   const [currentOrderPaymentAmount, setCurrentOrderPaymentAmount] = useState("")
+  const [currentOrderAmountTouched, setCurrentOrderAmountTouched] = useState(false)
   const [collectPreviousDueEnabled, setCollectPreviousDueEnabled] = useState(false)
   const [collectPreviousDueAmount, setCollectPreviousDueAmount] = useState("")
   const [saveExtraAsAdvance, setSaveExtraAsAdvance] = useState(false)
@@ -190,6 +191,24 @@ export default function OrdersTab({ externalMode = false }) {
     }
   }, [orderType])
 
+  useEffect(() => {
+    if (!partialPaymentEnabled || collectPreviousDueEnabled || currentOrderAmountTouched) {
+      return
+    }
+
+    if (!amountReceived) {
+      setCurrentOrderPaymentAmount("")
+      return
+    }
+
+    setCurrentOrderPaymentAmount(amountReceived)
+  }, [
+    amountReceived,
+    partialPaymentEnabled,
+    collectPreviousDueEnabled,
+    currentOrderAmountTouched,
+  ])
+
 
   function showToast(message,type="success",options = {}){
 
@@ -248,6 +267,7 @@ export default function OrdersTab({ externalMode = false }) {
     setPaymentOnlineAmount("")
     setPartialPaymentEnabled(false)
     setCurrentOrderPaymentAmount(finalPayableAfterAdvance ? String(finalPayableAfterAdvance) : "")
+    setCurrentOrderAmountTouched(false)
     setCollectPreviousDueEnabled(false)
     setCollectPreviousDueAmount(previousDueAvailable ? String(previousDueAvailable) : "")
     setSaveExtraAsAdvance(false)
@@ -404,6 +424,7 @@ export default function OrdersTab({ externalMode = false }) {
   setPaymentOnlineAmount("")
   setPartialPaymentEnabled(false)
   setCurrentOrderPaymentAmount("")
+  setCurrentOrderAmountTouched(false)
   setCollectPreviousDueEnabled(false)
   setCollectPreviousDueAmount("")
   setSaveExtraAsAdvance(false)
@@ -635,8 +656,8 @@ export default function OrdersTab({ externalMode = false }) {
         return
       }
 
-      if(finalPayableAfterAdvance > 0 && currentOrderAmount >= finalPayableAfterAdvance){
-        showToast("Partial payment amount must be less than the current payable amount.","warning")
+      if(finalPayableAfterAdvance > 0 && currentOrderAmount > finalPayableAfterAdvance){
+        showToast("Amount for this order cannot be more than the current payable amount.","warning")
         return
       }
     }
@@ -1772,6 +1793,10 @@ Assign Delivery Boy
                     const nextValue = !current
                     if (!nextValue) {
                       setCurrentOrderPaymentAmount(String(finalPayableAfterAdvance || ""))
+                      setCurrentOrderAmountTouched(false)
+                    } else {
+                      setCurrentOrderPaymentAmount(String(amountReceived || finalPayableAfterAdvance || ""))
+                      setCurrentOrderAmountTouched(false)
                     }
                     return nextValue
                   })
@@ -1817,11 +1842,14 @@ Assign Delivery Boy
                     type="number"
                     placeholder="How much is being paid for this order now?"
                     value={currentOrderPaymentAmount}
-                    onChange={(e)=>setCurrentOrderPaymentAmount(e.target.value)}
+                    onChange={(e)=>{
+                      setCurrentOrderPaymentAmount(e.target.value)
+                      setCurrentOrderAmountTouched(true)
+                    }}
                     className="w-full rounded-2xl border border-slate-300 p-3 outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-500/30"
                   />
                   <div className="mt-2 text-xs text-slate-500">
-                    Use this when the customer is paying only part of the current order. The remaining amount will move to customer ledger immediately.
+                    This auto-follows Amount Received for a normal partial payment. Change it only when you also want to collect some older due in the same payment.
                   </div>
                 </div>
               ) : null}
@@ -1837,6 +1865,9 @@ Assign Delivery Boy
                         setCollectPreviousDueEnabled(checked)
                         if(checked && !collectPreviousDueAmount){
                           setCollectPreviousDueAmount(String(previousDueAvailable))
+                        }
+                        if(!checked && partialPaymentEnabled && !currentOrderAmountTouched){
+                          setCurrentOrderPaymentAmount(String(amountReceived || finalPayableAfterAdvance || ""))
                         }
                       }}
                     />

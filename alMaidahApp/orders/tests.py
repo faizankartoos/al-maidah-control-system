@@ -325,6 +325,67 @@ class DeliveryOrderCreateTests(AuthenticatedOrdersAPITestCase):
         self.assertEqual(payment.amount, Decimal("100.00"))
         self.assertEqual(cash.balance, Decimal("100.00"))
 
+    def test_pay_now_partial_payment_marks_order_partial_and_moves_remaining_to_customer_ledger(self):
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DINE_IN",
+                "payment_mode": "PAY_NOW",
+                "payment_method": "CASH",
+                "payment_amount": "200.00",
+                "order_payment_amount": "200.00",
+                "phone": "9900000101",
+                "name": "Partial Guest",
+                "table_number": "Table 6",
+                "items": [
+                    {"name": "Burger", "qty": 2, "price": "200.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.get(id=response.json()["order_id"])
+        cash = get_cash_drawer()
+        cash.refresh_from_db()
+        order.customer_account.refresh_from_db()
+
+        self.assertEqual(order.total_amount, Decimal("400.00"))
+        self.assertEqual(order.payment_status, "PARTIAL")
+        self.assertEqual(order.payments.count(), 1)
+        self.assertEqual(order.payments.get().amount, Decimal("200.00"))
+        self.assertEqual(order.customer_account.balance, Decimal("200.00"))
+        self.assertEqual(cash.balance, Decimal("200.00"))
+        self.assertEqual(Decimal(str(response.json()["remaining_amount"])), Decimal("200.00"))
+        self.assertEqual(Decimal(str(response.json()["order_payment_amount"])), Decimal("200.00"))
+
+    def test_pay_now_partial_payment_requires_phone_number_for_customer_balance(self):
+
+        response = self.client.post(
+            "/api/orders/create/",
+            data=json.dumps({
+                "order_type": "DINE_IN",
+                "payment_mode": "PAY_NOW",
+                "payment_method": "CASH",
+                "payment_amount": "200.00",
+                "order_payment_amount": "200.00",
+                "table_number": "Table 7",
+                "items": [
+                    {"name": "Burger", "qty": 2, "price": "200.00"}
+                ]
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"],
+            "Phone number is required to keep a pending balance or customer advance for this order."
+        )
+        self.assertEqual(Order.objects.count(), 0)
+
 
 class DeliveryBoySettingsTests(AuthenticatedOrdersAPITestCase):
 
@@ -1670,6 +1731,61 @@ class OrderCollectionTests(AuthenticatedOrdersAPITestCase):
 
         self.assertEqual(order.payment_status, "PAID")
         self.assertEqual(customer.balance, Decimal("0.00"))
+
+    def test_collect_accepts_exact_remaining_amount_when_order_allocation_is_explicit(self):
+
+        customer = LedgerAccount.objects.create(
+            name="Partial Customer",
+            account_type="CUSTOMER",
+            contact_number="9900000610"
+        )
+
+        order = Order.objects.create(
+            order_type="DINE_IN",
+            order_status="PROCESSING",
+            payment_status="PARTIAL",
+            customer_name="Partial Customer",
+            customer_phone="9900000610",
+            customer_account=customer,
+            table_number="Table 8",
+        )
+        OrderItem.objects.create(
+            order=order,
+            item_name="Burger",
+            quantity=2,
+            price=Decimal("140.00")
+        )
+        OrderPayment.objects.create(
+            order=order,
+            amount=Decimal("140.00"),
+            payment_type="CASH"
+        )
+
+        record_credit(
+            account=customer,
+            amount=Decimal("140.00"),
+            reference=f"ORDER-{order.id}",
+            description="Customer owes remaining partial balance"
+        )
+
+        response = self.client.post(
+            f"/api/orders/{order.id}/collect-payment/",
+            data=json.dumps({
+                "amount": "140.00",
+                "payment_type": "CASH",
+                "order_payment_amount": "140.00",
+            }),
+            content_type="application/json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        order.refresh_from_db()
+        customer.refresh_from_db()
+
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertEqual(customer.balance, Decimal("0.00"))
+        self.assertEqual(Decimal(str(response.json()["remaining_amount"])), Decimal("0.00"))
 
 
 class CancelOrderTests(AuthenticatedOrdersAPITestCase):

@@ -339,6 +339,7 @@ export default function ManageOrdersTab({
   const [collectAdvanceEnabled, setCollectAdvanceEnabled] = useState(false);
   const [collectPartialEnabled, setCollectPartialEnabled] = useState(false);
   const [collectCurrentOrderAmount, setCollectCurrentOrderAmount] = useState("");
+  const [collectCurrentOrderAmountTouched, setCollectCurrentOrderAmountTouched] = useState(false);
   const [collectPreviousDueEnabled, setCollectPreviousDueEnabled] = useState(false);
   const [collectPreviousDueAmount, setCollectPreviousDueAmount] = useState("");
   const [collectSaveExtraAsAdvance, setCollectSaveExtraAsAdvance] = useState(false);
@@ -397,6 +398,24 @@ export default function ManageOrdersTab({
     ? Math.max(Number(collectAmount || 0) - collectTotalSelectedAmount, 0)
     : 0;
 
+  useEffect(() => {
+    if (!collectPartialEnabled || collectPreviousDueEnabled || collectCurrentOrderAmountTouched) {
+      return;
+    }
+
+    if (!collectAmount) {
+      setCollectCurrentOrderAmount("");
+      return;
+    }
+
+    setCollectCurrentOrderAmount(String(collectAmount));
+  }, [
+    collectAmount,
+    collectPartialEnabled,
+    collectPreviousDueEnabled,
+    collectCurrentOrderAmountTouched,
+  ]);
+
   function showCollectDeniedMessage() {
     setShowCollectDeniedToast(true);
     window.setTimeout(() => {
@@ -409,6 +428,7 @@ export default function ManageOrdersTab({
     setCollectAdvanceEnabled(false);
     setCollectPartialEnabled(false);
     setCollectCurrentOrderAmount("");
+    setCollectCurrentOrderAmountTouched(false);
     setCollectPreviousDueEnabled(false);
     setCollectPreviousDueAmount("");
     setCollectSaveExtraAsAdvance(false);
@@ -1294,8 +1314,8 @@ async function submitCollectPayment(forceDeductChange = false){
       return
     }
 
-    if(collectCurrentOrderPayable > 0 && currentOrderAmount >= collectCurrentOrderPayable){
-      setCollectError("Partial collection amount must be less than the current payable amount.")
+    if(collectCurrentOrderPayable > 0 && currentOrderAmount > collectCurrentOrderPayable){
+      setCollectError("Amount for this order cannot be more than the remaining payable amount.")
       return
     }
   }
@@ -2895,7 +2915,7 @@ Payment Collection
 Collect Payment For Order #{selectedOrder.id}
 </h2>
 <div className="mt-2 text-sm text-slate-400">
-Record this order payment, optionally collect an older pending balance too, or save any deliberate extra as customer advance.
+Enter what the customer is paying now. Use the extra options only if some balance should still remain unpaid, if you also want to collect an older due, or if the customer is intentionally paying extra as advance.
 </div>
 </div>
 
@@ -2933,7 +2953,7 @@ Close
         Advance available: ₹{formatMoney(collectAdvanceAvailable)}
       </span>
       <span className="rounded-full bg-slate-950/40 px-3 py-1 text-slate-200">
-        Previous due ready to collect: ₹{formatMoney(collectPreviousDueAvailable)}
+        Older pending balance: ₹{formatMoney(collectPreviousDueAvailable)}
       </span>
     </div>
   </div>
@@ -2941,7 +2961,7 @@ Close
 
 <div className="mt-5 space-y-4">
 <div>
-<label className="mb-2 block text-sm text-slate-300">Collected Amount</label>
+<label className="mb-2 block text-sm text-slate-300">Amount Customer Paid Now</label>
 <input
 type="number"
 value={collectAmount}
@@ -2951,7 +2971,7 @@ onChange={(e)=>{
   setCollectChangePrompt("")
 }}
 className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-emerald-500"
-placeholder="Enter final collected amount"
+placeholder="Enter how much the customer paid now"
 />
 </div>
 
@@ -2979,6 +2999,10 @@ placeholder="Enter final collected amount"
         const nextValue = !current
         if(!nextValue){
           setCollectCurrentOrderAmount(String(collectCurrentOrderPayable || ""))
+          setCollectCurrentOrderAmountTouched(false)
+        } else {
+          setCollectCurrentOrderAmount(String(collectAmount || collectCurrentOrderPayable || ""))
+          setCollectCurrentOrderAmountTouched(false)
         }
         return nextValue
       })
@@ -2991,7 +3015,7 @@ placeholder="Enter final collected amount"
         : "border border-slate-700 text-slate-200 hover:border-slate-500"
     }`}
   >
-    Partial Collection
+    Keep Some Balance Unpaid
   </button>
 
   <button
@@ -3012,20 +3036,30 @@ placeholder="Enter final collected amount"
 </div>
 
 {collectPartialEnabled ? (
-  <div>
-    <label className="mb-2 block text-sm text-slate-300">Current Order Amount</label>
-    <input
-      type="number"
-      placeholder="How much is being collected for this order?"
-      value={collectCurrentOrderAmount}
-      onChange={(e)=>{
-        setCollectCurrentOrderAmount(e.target.value)
-        setCollectError("")
-        setCollectChangePrompt("")
-      }}
-      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
-    />
-  </div>
+  collectPreviousDueEnabled ? (
+    <div>
+      <label className="mb-2 block text-sm text-slate-300">Amount From This Payment For This Order</label>
+      <input
+        type="number"
+        placeholder="Only needed because you are also collecting an older due"
+        value={collectCurrentOrderAmount}
+        onChange={(e)=>{
+          setCollectCurrentOrderAmount(e.target.value)
+          setCollectCurrentOrderAmountTouched(true)
+          setCollectError("")
+          setCollectChangePrompt("")
+        }}
+        className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+      />
+      <div className="mt-2 text-xs leading-6 text-slate-400">
+        Split the amount only when part of this same payment should go to this order and another part should go to an older pending balance.
+      </div>
+    </div>
+  ) : (
+    <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-50">
+      This payment will use ₹{formatMoney(Number(collectAmount || 0))} for this order, and the rest of the order will stay pending.
+    </div>
+  )
 ) : null}
 
 {collectPreviousDueAvailable > 0 ? (
@@ -3040,12 +3074,15 @@ placeholder="Enter final collected amount"
           if(checked && !collectPreviousDueAmount){
             setCollectPreviousDueAmount(String(collectPreviousDueAvailable))
           }
+          if(!checked && collectPartialEnabled && !collectCurrentOrderAmountTouched){
+            setCollectCurrentOrderAmount(String(collectAmount || collectCurrentOrderPayable || ""))
+          }
           setCollectError("")
           setCollectChangePrompt("")
         }}
         className="h-4 w-4 accent-amber-400"
       />
-      Collect previous pending balance too
+      Also collect older pending balance
     </label>
 
     {collectPreviousDueEnabled ? (
@@ -3120,14 +3157,14 @@ className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 tex
 	)}
 
 	<div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-xs leading-6 text-slate-400">
-	<div>Advance adjusted on this order: ₹{formatMoney(collectAdvanceAppliedPreview)}</div>
-	<div>Current order allocation: ₹{formatMoney(collectSelectedOrderAmount)}</div>
-	<div>Previous balance allocation: ₹{formatMoney(collectSelectedPreviousDueAmount)}</div>
-	<div>Total selected allocation: ₹{formatMoney(collectTotalSelectedAmount)}</div>
+	<div>Customer advance used here: ₹{formatMoney(collectAdvanceAppliedPreview)}</div>
+	<div>From this payment to this order: ₹{formatMoney(collectSelectedOrderAmount)}</div>
+	<div>From this payment to older due: ₹{formatMoney(collectSelectedPreviousDueAmount)}</div>
+	<div>Total being recorded now: ₹{formatMoney(collectTotalSelectedAmount)}</div>
 	{collectSaveExtraAsAdvance ? (
-	  <div className="text-emerald-200">Extra above the selected allocation will be saved as advance. Preview: ₹{formatMoney(collectAdvanceSavePreview)}</div>
+	  <div className="text-emerald-200">Any extra above this total will be saved as customer advance. Preview: ₹{formatMoney(collectAdvanceSavePreview)}</div>
 	) : (
-	  <div>Extra above the selected allocation will be treated as change and confirmed before saving.</div>
+	  <div>If the customer paid more than this total, the extra will be treated as change and confirmed before saving.</div>
 	)}
 	</div>
 
