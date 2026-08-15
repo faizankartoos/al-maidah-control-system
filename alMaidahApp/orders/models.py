@@ -51,6 +51,7 @@ class Order(models.Model):
 
     PAYMENT_STATUS = (
         ("UNPAID", "Unpaid"),
+        ("PARTIAL", "Partial"),
         ("PAID", "Paid"),
     )
 

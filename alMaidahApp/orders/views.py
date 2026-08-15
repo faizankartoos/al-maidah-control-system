@@ -5,6 +5,7 @@ from ledger.serializers import AccountSerializer, AccountWriteSerializer
 from ledger.utils import get_cash_drawer
 
 from .services import (
+    apply_flexible_customer_payment,
     apply_customer_advance_to_order,
     cancel_order,
     compute_subtotal_from_items,
@@ -428,6 +429,7 @@ class BulkCollectOrdersSettingsAPIView(APIView):
 class CustomerLookupAPIView(APIView):
     def get(self, request):
         query = (request.query_params.get("q") or "").strip()
+        exclude_order_id = request.query_params.get("exclude_order_id")
 
         if not query:
             return Response([])
@@ -441,7 +443,10 @@ class CustomerLookupAPIView(APIView):
         )
 
         for account in customer_accounts:
-            context = get_customer_context_by_phone(account.contact_number)
+            context = get_customer_context_by_phone(
+                account.contact_number,
+                exclude_order_id=exclude_order_id,
+            )
             if context:
                 customer_rows[context["phone"]] = context
 
@@ -457,7 +462,10 @@ class CustomerLookupAPIView(APIView):
         for phone in order_phone_rows:
             if phone in customer_rows:
                 continue
-            context = get_customer_context_by_phone(phone)
+            context = get_customer_context_by_phone(
+                phone,
+                exclude_order_id=exclude_order_id,
+            )
             if context:
                 customer_rows[context["phone"]] = context
 
@@ -465,6 +473,7 @@ class CustomerLookupAPIView(APIView):
             {
                 **row,
                 "current_balance": row["current_balance"],
+                "previous_due_available": row["previous_due_available"],
                 "advance_available": row["advance_available"],
             }
             for row in customer_rows.values()
@@ -574,11 +583,18 @@ class CreateOrderAPIView(APIView):
 
             requested_discount = self._parse_money(data.get("discount"))
             payment_amount = Decimal("0.00")
+            order_payment_amount = None
+            collect_previous_due_amount = Decimal("0.00")
             cash_amount = Decimal("0.00")
             online_amount = Decimal("0.00")
+            save_extra_as_advance = _parse_bool(data.get("save_extra_as_advance"))
 
             if payment_mode == "PAY_NOW":
                 payment_amount = self._parse_money(data.get("payment_amount"))
+                order_payment_amount_raw = data.get("order_payment_amount")
+                if order_payment_amount_raw not in [None, "", " ", "null"]:
+                    order_payment_amount = self._parse_money(order_payment_amount_raw)
+                collect_previous_due_amount = self._parse_money(data.get("collect_previous_due_amount"))
 
                 if payment_method == "CASH":
                     cash_amount = payment_amount
@@ -597,6 +613,7 @@ class CreateOrderAPIView(APIView):
                     raise ValueError("Select a valid payment method")
             else:
                 payment_method = None
+                save_extra_as_advance = False
 
             guest_count_raw = data.get("guest_count")
 
@@ -609,7 +626,7 @@ class CreateOrderAPIView(APIView):
         address = (data.get("address") or "").strip() or None
         area_id = data.get("area_id")
         order_note = (data.get("order_note") or "").strip() or None
-        deduct_change = bool(data.get("deduct_change"))
+        deduct_change = _parse_bool(data.get("deduct_change"))
 
         try:
             scheduled_time = self._parse_scheduled_time(data.get("scheduled_time"))
@@ -725,6 +742,13 @@ class CreateOrderAPIView(APIView):
             order.refresh_from_db()
             total = Decimal(str(order.total_amount))
             advance_applied = Decimal("0.00")
+            payment_summary = {
+                "order_payment_amount": Decimal("0.00"),
+                "previous_due_collected": Decimal("0.00"),
+                "advance_saved": Decimal("0.00"),
+                "remaining_amount": total,
+                "payment_status": order.payment_status,
+            }
             customer_context = get_customer_context_by_phone(phone) if phone else None
             customer_account = None
 
@@ -740,14 +764,16 @@ class CreateOrderAPIView(APIView):
 
             remaining_after_advance = total - advance_applied
 
-            if remaining_after_advance <= 0:
+            if remaining_after_advance <= 0 and payment_mode == "PAY_LATER":
                 order.payment_status = "PAID"
                 if customer_account and not order.customer_account_id:
                     order.customer_account = customer_account
                     order.save(update_fields=["payment_status", "customer_account"])
                 else:
                     order.save(update_fields=["payment_status"])
-                return order, advance_applied
+                payment_summary["remaining_amount"] = Decimal("0.00")
+                payment_summary["payment_status"] = order.payment_status
+                return order, advance_applied, payment_summary
 
             # ---------------- PAYMENT RULES ----------------
 
@@ -766,41 +792,32 @@ class CreateOrderAPIView(APIView):
                         description=f"Delivery order assigned #{order.id}"
                     )
 
-                order.payment_status = "UNPAID"
+                order.payment_status = "PARTIAL" if advance_applied > 0 else "UNPAID"
                 if customer_account and advance_applied > 0 and not order.customer_account_id:
                     order.customer_account = customer_account
                     order.save(update_fields=["payment_status", "customer_account"])
                 else:
                     order.save(update_fields=["payment_status"])
-                return order, advance_applied
+                payment_summary["remaining_amount"] = remaining_after_advance
+                payment_summary["payment_status"] = order.payment_status
+                return order, advance_applied, payment_summary
 
-            # 🚨 NO PARTIAL PAYMENTS
-            if payment_amount < remaining_after_advance:
-                raise ValueError("Cannot accept less than total amount")
-
-            # Change confirmation
-            if payment_amount > remaining_after_advance and not deduct_change:
-                raise ChangeConfirmationRequired(payment_amount - remaining_after_advance)
-
-            # Mixed validation
-            if payment_method == "MIXED":
-                if cash_amount + online_amount != payment_amount:
-                    raise ValueError("Cash + Online mismatch")
-
-            # Process payment
-            process_payment(
+            payment_summary = apply_flexible_customer_payment(
                 order,
                 payment_amount,
                 payment_method,
                 cash_amount=cash_amount,
                 online_amount=online_amount,
-                deduct_change=deduct_change
+                order_payment_amount=order_payment_amount if order_payment_amount is not None else remaining_after_advance,
+                collect_previous_due_amount=collect_previous_due_amount,
+                save_extra_as_advance=save_extra_as_advance,
+                deduct_change=deduct_change,
             )
 
-            return order, advance_applied
+            return order, advance_applied, payment_summary
 
         try:
-            order, advance_applied = create_order()
+            order, advance_applied, payment_summary = create_order()
 
         except ChangeConfirmationRequired as exc:
             return Response(
@@ -822,6 +839,11 @@ class CreateOrderAPIView(APIView):
                 "total": order.total_amount,
                 "discount_applied": discount,
                 "advance_applied": advance_applied,
+                "order_payment_amount": payment_summary["order_payment_amount"],
+                "previous_due_collected": payment_summary["previous_due_collected"],
+                "advance_saved": payment_summary["advance_saved"],
+                "remaining_amount": payment_summary["remaining_amount"],
+                "payment_status": payment_summary["payment_status"],
                 "acceptance_status": order.acceptance_status,
                 "submission_source": order.submission_source,
             },
@@ -1327,13 +1349,24 @@ class CollectPaymentAPIView(APIView):
             amount = Decimal(str(data.get("amount", 0)))
             cash_amount = Decimal(str(data.get("cash_amount", 0) or 0))
             online_amount = Decimal(str(data.get("online_amount", 0) or 0))
+            collect_previous_due_amount = Decimal(str(data.get("collect_previous_due_amount", 0) or 0))
         except (InvalidOperation, TypeError, ValueError):
             return Response({"error": "Enter a valid payment amount"}, status=400)
 
         payment_type = data.get("payment_type", "CASH")
-        deduct_change = bool(data.get("deduct_change"))
+        deduct_change = _parse_bool(data.get("deduct_change"))
+        save_extra_as_advance = _parse_bool(data.get("save_extra_as_advance"))
+        apply_customer_advance = _parse_bool(data.get("apply_customer_advance"))
+        order_payment_amount_raw = data.get("order_payment_amount")
+        order_payment_amount = None
 
-        if amount <= 0:
+        if order_payment_amount_raw not in [None, "", " ", "null"]:
+            try:
+                order_payment_amount = Decimal(str(order_payment_amount_raw))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({"error": "Enter a valid current order amount"}, status=400)
+
+        if amount <= 0 and not apply_customer_advance:
             return Response({"error": "Invalid payment amount"}, status=400)
 
         try:
@@ -1344,7 +1377,11 @@ class CollectPaymentAPIView(APIView):
                 payment_type,
                 cash_amount=cash_amount,
                 online_amount=online_amount,
-                deduct_change=deduct_change
+                deduct_change=deduct_change,
+                order_payment_amount=order_payment_amount,
+                collect_previous_due_amount=collect_previous_due_amount,
+                save_extra_as_advance=save_extra_as_advance,
+                apply_customer_advance=apply_customer_advance,
             )
 
         except ChangeConfirmationRequired as exc:
@@ -1366,7 +1403,12 @@ class CollectPaymentAPIView(APIView):
             {
                 "success": True,
                 "order_id": order.id,
-                "payment_status": order.payment_status
+                "payment_status": order.payment_status,
+                "remaining_amount": get_order_remaining_amount(order),
+                "order_payment_amount": order_payment_amount,
+                "collect_previous_due_amount": collect_previous_due_amount,
+                "save_extra_as_advance": save_extra_as_advance,
+                "apply_customer_advance": apply_customer_advance,
             }
         )
 
@@ -1580,8 +1622,11 @@ class OrdersFilterAPIView(APIView):
         if filter_type in ["PROCESSING","READY","COMPLETED","CANCELLED"]:
             qs = qs.filter(order_status=filter_type)
 
-        if filter_type in ["PAID","UNPAID"]:
+        if filter_type == "PAID":
             qs = qs.filter(payment_status=filter_type)
+
+        if filter_type == "UNPAID":
+            qs = qs.exclude(payment_status="PAID")
 
         if filter_type == "DINE_IN":
             qs = qs.filter(order_type="DINE_IN")
@@ -1726,7 +1771,7 @@ class StartScheduledOrderAPIView(APIView):
         ):
             record_debit(
                 account=order.delivery_boy,
-                amount=order.total_amount,
+                amount=get_order_remaining_amount(order),
                 payment_type="SYSTEM",
                 reference=f"ORDER-{order.id}",
                 description=f"Delivery order assigned #{order.id}"

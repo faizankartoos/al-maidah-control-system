@@ -161,9 +161,13 @@ export default function CustomerPhoneAutocomplete({
                       <div className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-200">
                         Advance {Number(customer.advance_available || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
-                    ) : customer.has_outstanding ? (
+                    ) : Number(customer.previous_due_available || 0) > 0 ? (
                       <div className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-200">
-                        Due {Number(customer.current_balance || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        Due {Number(customer.previous_due_available || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                    ) : customer.has_outstanding ? (
+                      <div className="rounded-full bg-orange-500/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-orange-200">
+                        Ledger {Number(customer.current_balance || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
                     ) : (
                       <div className="rounded-full bg-slate-800 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300">

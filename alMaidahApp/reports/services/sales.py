@@ -163,7 +163,7 @@ def get_sales_report(from_date, to_date):
         for order in queryset[:25]
     ]
 
-    unpaid_completed_orders = queryset.filter(payment_status="UNPAID")
+    unpaid_completed_orders = queryset.exclude(payment_status="PAID")
 
     return {
         "summary": {

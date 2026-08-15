@@ -276,8 +276,8 @@ def daily_sales_report(date=None):
     total_credits = _sum_entries(cash_entries.filter(entry_type="CREDIT"))
     total_debits = _sum_entries(cash_entries.filter(entry_type="DEBIT"))
 
-    unpaid_orders = Order.objects.filter(
-        payment_status="UNPAID",
+    unpaid_orders = Order.objects.exclude(
+        payment_status="PAID",
     ).exclude(order_status="CANCELLED").order_by("-created_at")
 
     unpaid_list = [

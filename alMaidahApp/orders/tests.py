@@ -739,7 +739,7 @@ class OrderUpdateTests(AuthenticatedOrdersAPITestCase):
         order.customer_account.refresh_from_db()
 
         self.assertEqual(order.total_amount, Decimal("200.00"))
-        self.assertEqual(order.payment_status, "UNPAID")
+        self.assertEqual(order.payment_status, "PARTIAL")
         self.assertEqual(order.customer_account.balance, Decimal("100.00"))
 
     def test_update_order_invalid_payload_does_not_partially_save(self):

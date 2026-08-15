@@ -115,6 +115,11 @@ export default function OrdersTab({ externalMode = false }) {
   const [amountReceived,setAmountReceived] = useState("")
   const [paymentCashAmount,setPaymentCashAmount] = useState("")
   const [paymentOnlineAmount,setPaymentOnlineAmount] = useState("")
+  const [partialPaymentEnabled, setPartialPaymentEnabled] = useState(false)
+  const [currentOrderPaymentAmount, setCurrentOrderPaymentAmount] = useState("")
+  const [collectPreviousDueEnabled, setCollectPreviousDueEnabled] = useState(false)
+  const [collectPreviousDueAmount, setCollectPreviousDueAmount] = useState("")
+  const [saveExtraAsAdvance, setSaveExtraAsAdvance] = useState(false)
 
   useEffect(() => {
     async function loadDeliveryBoys() {
@@ -209,6 +214,11 @@ export default function OrdersTab({ externalMode = false }) {
     if(!customer?.has_advance){
       setApplyCustomerAdvance(false)
     }
+
+    if(!(Number(customer?.previous_due_available || 0) > 0)){
+      setCollectPreviousDueEnabled(false)
+      setCollectPreviousDueAmount("")
+    }
   }
 
   function handleSelectCustomer(customer){
@@ -229,6 +239,20 @@ export default function OrdersTab({ externalMode = false }) {
         setDeliveryCharge(Number(customer.area_delivery_charge || 0))
       }
     }
+  }
+
+  function openAmountModalForMethod(method){
+    setPaymentMethod(method)
+    setAmountReceived(finalPayableAfterAdvance)
+    setPaymentCashAmount("")
+    setPaymentOnlineAmount("")
+    setPartialPaymentEnabled(false)
+    setCurrentOrderPaymentAmount(finalPayableAfterAdvance ? String(finalPayableAfterAdvance) : "")
+    setCollectPreviousDueEnabled(false)
+    setCollectPreviousDueAmount(previousDueAvailable ? String(previousDueAvailable) : "")
+    setSaveExtraAsAdvance(false)
+    setShowMethodModal(false)
+    setShowAmountModal(true)
   }
 
 
@@ -313,8 +337,19 @@ export default function OrdersTab({ externalMode = false }) {
   const shouldShowPhoneField = Boolean(orderType)
   const shouldShowNameField = Boolean(orderType)
   const availableAdvance = Number(matchedCustomer?.advance_available || 0)
+  const previousDueAvailable = Number(matchedCustomer?.previous_due_available || 0)
   const appliedAdvancePreview = applyCustomerAdvance ? Math.min(availableAdvance, total) : 0
   const finalPayableAfterAdvance = Math.max(total - appliedAdvancePreview, 0)
+  const selectedCurrentOrderAmount = partialPaymentEnabled
+    ? Number(currentOrderPaymentAmount || 0)
+    : finalPayableAfterAdvance
+  const selectedPreviousDueAmount = collectPreviousDueEnabled
+    ? Number(collectPreviousDueAmount || 0)
+    : 0
+  const totalSelectedCollectionAmount = selectedCurrentOrderAmount + selectedPreviousDueAmount
+  const extraAdvancePreview = saveExtraAsAdvance
+    ? Math.max(Number(amountReceived || 0) - totalSelectedCollectionAmount, 0)
+    : 0
   const catalogProducts = products
     .filter(p => !selectedCategory || p.category===selectedCategory)
     .filter(p => {
@@ -367,6 +402,11 @@ export default function OrdersTab({ externalMode = false }) {
   setPaymentMethod(null)
   setPaymentCashAmount("")
   setPaymentOnlineAmount("")
+  setPartialPaymentEnabled(false)
+  setCurrentOrderPaymentAmount("")
+  setCollectPreviousDueEnabled(false)
+  setCollectPreviousDueAmount("")
+  setSaveExtraAsAdvance(false)
   setShowPaymentModal(false)
   setShowMethodModal(false)
   setShowAmountModal(false)
@@ -454,6 +494,9 @@ export default function OrdersTab({ externalMode = false }) {
       payment_mode:finalMode,
       payment_method:finalMethod,
       payment_amount:amount,
+      order_payment_amount: extra.order_payment_amount ?? null,
+      collect_previous_due_amount: extra.collect_previous_due_amount ?? 0,
+      save_extra_as_advance: extra.save_extra_as_advance ?? false,
       cash_amount: extra.cash_amount ?? 0,
       online_amount: extra.online_amount ?? 0,
       deduct_change: extra.deduct_change ?? false,
@@ -486,11 +529,28 @@ export default function OrdersTab({ externalMode = false }) {
       const data = await res.json()
 
       if(res.ok){
+        const successParts = []
+        if(data.acceptance_status === "PENDING"){
+          successParts.push("External order submitted for acceptance")
+        }else{
+          successParts.push("Order placed")
+        }
+
+        if(Number(data.advance_applied || 0) > 0){
+          successParts.push(`Rs ${formatMoney(data.advance_applied)} adjusted from customer advance`)
+        }
+
+        if(Number(data.previous_due_collected || 0) > 0){
+          successParts.push(`Rs ${formatMoney(data.previous_due_collected)} collected from previous balance`)
+        }
+
+        if(Number(data.advance_saved || 0) > 0){
+          successParts.push(`Rs ${formatMoney(data.advance_saved)} saved as customer advance`)
+        }
+
         const successMessage = data.acceptance_status === "PENDING"
           ? "External order submitted for acceptance"
-          : Number(data.advance_applied || 0) > 0
-            ? `Order placed. Rs ${formatMoney(data.advance_applied)} adjusted from customer advance.`
-            : "Order placed"
+          : successParts.join(". ")
 
         setPostOrderPrintPrompt({
           orderId: data.order_id,
@@ -539,7 +599,7 @@ export default function OrdersTab({ externalMode = false }) {
     return
   }
 
-  if(finalPayableAfterAdvance <= 0){
+  if(finalPayableAfterAdvance <= 0 && previousDueAvailable <= 0){
     submitOrder("PAY_LATER",null,0)
     return
   }
@@ -551,12 +611,55 @@ export default function OrdersTab({ externalMode = false }) {
 
 
   function confirmPayment(){
-
-
     const amount = Number(amountReceived)
+    const currentOrderAmount = partialPaymentEnabled
+      ? Number(currentOrderPaymentAmount || 0)
+      : finalPayableAfterAdvance
+    const previousDueAmount = collectPreviousDueEnabled
+      ? Number(collectPreviousDueAmount || 0)
+      : 0
 
     if(!Number.isFinite(amount) || amount <= 0){
       showToast("Enter a valid received amount","warning")
+      return
+    }
+
+    if(partialPaymentEnabled){
+      if(!phone.trim()){
+        showToast("Phone number is required for partial payment orders.","warning",{ position: "center" })
+        return
+      }
+
+      if(!Number.isFinite(currentOrderAmount) || currentOrderAmount <= 0){
+        showToast("Enter a valid current order amount.","warning")
+        return
+      }
+
+      if(finalPayableAfterAdvance > 0 && currentOrderAmount >= finalPayableAfterAdvance){
+        showToast("Partial payment amount must be less than the current payable amount.","warning")
+        return
+      }
+    }
+
+    if(collectPreviousDueEnabled){
+      if(!phone.trim()){
+        showToast("Phone number is required to collect previous balance.","warning",{ position: "center" })
+        return
+      }
+
+      if(!Number.isFinite(previousDueAmount) || previousDueAmount <= 0){
+        showToast("Enter a valid previous balance amount.","warning")
+        return
+      }
+
+      if(previousDueAmount - previousDueAvailable > 0.009){
+        showToast("Previous balance amount cannot exceed the available due.","warning")
+        return
+      }
+    }
+
+    if(saveExtraAsAdvance && !phone.trim()){
+      showToast("Phone number is required to save extra payment as customer advance.","warning",{ position: "center" })
       return
     }
 
@@ -575,19 +678,21 @@ export default function OrdersTab({ externalMode = false }) {
       }
     }
 
-    if(amount < finalPayableAfterAdvance){
-      showToast("Full payment required. Use Pay Later instead.","warning")
+    const selectedTotal = currentOrderAmount + previousDueAmount
+
+    if(amount < selectedTotal){
+      showToast("Received amount cannot be less than the selected current and previous balance amounts.","warning")
       return
     }
 
-    if(paymentMethod === "ONLINE" && amount > finalPayableAfterAdvance){
-      showToast("Online payment cannot exceed the total bill amount","warning")
+    if(paymentMethod === "ONLINE" && amount > selectedTotal && !saveExtraAsAdvance){
+      showToast("Online payment cannot exceed the selected payable amount unless the extra is saved as advance.","warning")
       return
     }
 
-    const changeAmount = amount - finalPayableAfterAdvance
+    const changeAmount = saveExtraAsAdvance ? 0 : amount - selectedTotal
 
-    if(paymentMethod === "MIXED" && changeAmount > cashAmount){
+    if(paymentMethod === "MIXED" && !saveExtraAsAdvance && changeAmount > cashAmount){
       showToast("Change can only be returned from the cash portion","warning")
       return
     }
@@ -604,6 +709,9 @@ export default function OrdersTab({ externalMode = false }) {
     }
 
     submitOrder("PAY_NOW",paymentMethod,amount,{
+      order_payment_amount: currentOrderAmount,
+      collect_previous_due_amount: previousDueAmount,
+      save_extra_as_advance: saveExtraAsAdvance,
       cash_amount: paymentMethod === "MIXED" ? cashAmount : 0,
       online_amount: paymentMethod === "MIXED" ? onlineAmount : 0,
       deduct_change: changeAmount > 0
@@ -679,7 +787,7 @@ onClick={()=>{
 
 	  setShowDeliveryModal(false)
 
-    if(finalPayableAfterAdvance <= 0){
+    if(finalPayableAfterAdvance <= 0 && previousDueAvailable <= 0){
       submitOrder("PAY_LATER",null,0)
       return
     }
@@ -1493,6 +1601,11 @@ Assign Delivery Boy
                             Existing customer history found. No advance is available right now.
                           </div>
                         )}
+                        {previousDueAvailable > 0 ? (
+                          <div className="mt-2 text-sm text-amber-100">
+                            Previous order-linked due ready to collect: Rs {formatMoney(previousDueAvailable)}
+                          </div>
+                        ) : null}
                       </div>
 
                       {matchedCustomer.has_advance ? (
@@ -1595,42 +1708,21 @@ Assign Delivery Boy
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
 
             <button
-              onClick={()=>{
-                setPaymentMethod("CASH")
-                setAmountReceived(finalPayableAfterAdvance)
-                setPaymentCashAmount("")
-                setPaymentOnlineAmount("")
-                setShowMethodModal(false)
-                setShowAmountModal(true)
-              }}
+              onClick={()=>openAmountModalForMethod("CASH")}
               className="block w-full bg-gray-700 text-white p-3 rounded mb-3"
             >
               CASH
             </button>
 
             <button
-              onClick={()=>{
-                setPaymentMethod("ONLINE")
-                setAmountReceived(finalPayableAfterAdvance)
-                setPaymentCashAmount("")
-                setPaymentOnlineAmount("")
-                setShowMethodModal(false)
-                setShowAmountModal(true)
-              }}
+              onClick={()=>openAmountModalForMethod("ONLINE")}
               className="block w-full bg-blue-600 text-white p-3 rounded"
             >
               ONLINE
             </button>
 
             <button
-              onClick={()=>{
-                setPaymentMethod("MIXED")
-                setAmountReceived(finalPayableAfterAdvance)
-                setPaymentCashAmount("")
-                setPaymentOnlineAmount("")
-                setShowMethodModal(false)
-                setShowAmountModal(true)
-              }}
+              onClick={()=>openAmountModalForMethod("MIXED")}
               className="block w-full bg-emerald-600 text-white p-3 rounded mt-3"
             >
               MIXED
@@ -1648,48 +1740,165 @@ Assign Delivery Boy
 
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-70 px-4">
 
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-black">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 text-black shadow-[0_28px_80px_rgba(15,23,42,0.28)]">
 
-            <div className="mb-3">Total Payable: ₹{formatMoney(finalPayableAfterAdvance)}</div>
-
-            <input
-              type="number"
-              placeholder="Amount Received"
-              value={amountReceived}
-              onChange={(e)=>setAmountReceived(e.target.value)}
-              className="w-full border p-2 mb-3"
-            />
-
-            {paymentMethod === "MIXED" && (
-              <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <input
-                  type="number"
-                  placeholder="Cash Received"
-                  value={paymentCashAmount}
-                  onChange={(e)=>setPaymentCashAmount(e.target.value)}
-                  className="w-full border p-2"
-                />
-
-                <input
-                  type="number"
-                  placeholder="Online Received"
-                  value={paymentOnlineAmount}
-                  onChange={(e)=>setPaymentOnlineAmount(e.target.value)}
-                  className="w-full border p-2"
-                />
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Payment Setup</div>
+                <div className="mt-2 text-xl font-semibold text-slate-900">
+                  Current order payable: ₹{formatMoney(finalPayableAfterAdvance)}
+                </div>
+                {previousDueAvailable > 0 ? (
+                  <div className="mt-1 text-sm text-amber-700">
+                    Previous customer due available: ₹{formatMoney(previousDueAvailable)}
+                  </div>
+                ) : null}
               </div>
-            )}
 
-            <div className="mb-3 text-sm text-gray-600">
-              Less than total is not allowed. Use Pay Later if the full amount is not being received.
+              <button
+                type="button"
+                onClick={() => setShowAmountModal(false)}
+                className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:border-slate-400 hover:text-slate-900"
+              >
+                Close
+              </button>
             </div>
 
-            <button
-              onClick={confirmPayment}
-              className="bg-green-600 text-white p-3 w-full rounded"
-            >
-              Confirm Payment
-            </button>
+            <div className="mb-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPartialPaymentEnabled((current) => {
+                    const nextValue = !current
+                    if (!nextValue) {
+                      setCurrentOrderPaymentAmount(String(finalPayableAfterAdvance || ""))
+                    }
+                    return nextValue
+                  })
+                }}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  partialPaymentEnabled
+                    ? "bg-amber-500 text-slate-950"
+                    : "border border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                }`}
+              >
+                Partial Payment
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSaveExtraAsAdvance((current) => !current)}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  saveExtraAsAdvance
+                    ? "bg-emerald-500 text-slate-950"
+                    : "border border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                }`}
+              >
+                Excessive Payment
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Amount Received</label>
+                <input
+                  type="number"
+                  placeholder="Amount Received"
+                  value={amountReceived}
+                  onChange={(e)=>setAmountReceived(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-300 p-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </div>
+
+              {partialPaymentEnabled ? (
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">Current Order Amount</label>
+                  <input
+                    type="number"
+                    placeholder="How much is being paid for this order now?"
+                    value={currentOrderPaymentAmount}
+                    onChange={(e)=>setCurrentOrderPaymentAmount(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 p-3 outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-500/30"
+                  />
+                  <div className="mt-2 text-xs text-slate-500">
+                    Use this when the customer is paying only part of the current order. The remaining amount will move to customer ledger immediately.
+                  </div>
+                </div>
+              ) : null}
+
+              {previousDueAvailable > 0 ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <label className="flex items-center gap-3 text-sm font-medium text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={collectPreviousDueEnabled}
+                      onChange={(e)=>{
+                        const checked = e.target.checked
+                        setCollectPreviousDueEnabled(checked)
+                        if(checked && !collectPreviousDueAmount){
+                          setCollectPreviousDueAmount(String(previousDueAvailable))
+                        }
+                      }}
+                    />
+                    Collect previous pending balance too
+                  </label>
+
+                  {collectPreviousDueEnabled ? (
+                    <div className="mt-3">
+                      <input
+                        type="number"
+                        placeholder="Previous due amount"
+                        value={collectPreviousDueAmount}
+                        onChange={(e)=>setCollectPreviousDueAmount(e.target.value)}
+                        className="w-full rounded-2xl border border-amber-200 p-3 outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-500/30"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {paymentMethod === "MIXED" && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <input
+                    type="number"
+                    placeholder="Cash Received"
+                    value={paymentCashAmount}
+                    onChange={(e)=>setPaymentCashAmount(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 p-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                  />
+
+                  <input
+                    type="number"
+                    placeholder="Online Received"
+                    value={paymentOnlineAmount}
+                    onChange={(e)=>setPaymentOnlineAmount(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 p-3 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                  />
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                <div>Current order allocation: ₹{formatMoney(selectedCurrentOrderAmount)}</div>
+                <div className="mt-1">Previous balance allocation: ₹{formatMoney(selectedPreviousDueAmount)}</div>
+                <div className="mt-1">Total selected allocation: ₹{formatMoney(totalSelectedCollectionAmount)}</div>
+                {saveExtraAsAdvance ? (
+                  <div className="mt-1 text-emerald-700">
+                    Any extra above the selected allocation will be saved as customer advance. Preview: ₹{formatMoney(extraAdvancePreview)}
+                  </div>
+                ) : (
+                  <div className="mt-1 text-slate-500">
+                    Any extra above the selected allocation will be treated as change and confirmed before saving.
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={confirmPayment}
+                className="w-full rounded-2xl bg-green-600 p-3 font-semibold text-white transition hover:bg-green-500"
+              >
+                Confirm Payment
+              </button>
+            </div>
 
           </div>
 

@@ -23,7 +23,53 @@ class ChangeConfirmationRequired(ValueError):
         )
 
 
-def get_customer_context_by_phone(phone):
+def _to_money(value):
+    return Decimal(str(value or "0.00")).quantize(MONEY_QUANTUM)
+
+
+def resolve_order_payment_status(total_amount, total_paid):
+    total_amount = _to_money(total_amount)
+    total_paid = _to_money(total_paid)
+
+    if total_paid <= 0:
+        return "UNPAID"
+
+    if total_paid >= total_amount:
+        return "PAID"
+
+    return "PARTIAL"
+
+
+def _customer_outstanding_queryset(*, phone=None, customer_account=None, exclude_order_id=None):
+    queryset = Order.objects.exclude(order_status="CANCELLED")
+
+    if customer_account:
+        queryset = queryset.filter(customer_account=customer_account)
+    elif phone:
+        queryset = queryset.filter(customer_phone=phone)
+    else:
+        return Order.objects.none()
+
+    if exclude_order_id:
+        queryset = queryset.exclude(id=exclude_order_id)
+
+    return queryset
+
+
+def get_customer_previous_due_total(*, phone=None, customer_account=None, exclude_order_id=None):
+    outstanding_total = Decimal("0.00")
+
+    for linked_order in _customer_outstanding_queryset(
+        phone=phone,
+        customer_account=customer_account,
+        exclude_order_id=exclude_order_id,
+    ).exclude(payment_status="PAID"):
+        outstanding_total += get_order_remaining_amount(linked_order)
+
+    return outstanding_total.quantize(MONEY_QUANTUM)
+
+
+def get_customer_context_by_phone(phone, exclude_order_id=None):
     cleaned_phone = (phone or "").strip()
 
     if not cleaned_phone:
@@ -45,7 +91,17 @@ def get_customer_context_by_phone(phone):
         Order.objects
         .filter(customer_phone=cleaned_phone)
         .exclude(order_status="CANCELLED")
-        .count()
+    )
+
+    if exclude_order_id:
+        order_count = order_count.exclude(id=exclude_order_id)
+
+    order_count = order_count.count()
+
+    previous_due_available = get_customer_previous_due_total(
+        phone=cleaned_phone,
+        customer_account=customer_account,
+        exclude_order_id=exclude_order_id,
     )
 
     if not customer_account and not latest_order:
@@ -75,22 +131,23 @@ def get_customer_context_by_phone(phone):
             else Decimal("0.00")
         ),
         "current_balance": current_balance,
+        "previous_due_available": previous_due_available,
         "advance_available": advance_available,
         "has_advance": advance_available > 0,
-        "has_outstanding": current_balance > 0,
+        "has_outstanding": current_balance > 0 or previous_due_available > 0,
         "order_count": order_count,
     }
 
 
 def get_order_amount_paid(order):
-    return order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    return _to_money(order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00"))
 
 
 def get_order_remaining_amount(order):
-    remaining = Decimal(str(order.total_amount)) - Decimal(str(get_order_amount_paid(order)))
+    remaining = _to_money(order.total_amount) - get_order_amount_paid(order)
     if remaining < 0:
         return Decimal("0.00")
-    return remaining
+    return remaining.quantize(MONEY_QUANTUM)
 
 
 def compute_subtotal_from_items(items):
@@ -216,32 +273,433 @@ def apply_customer_advance_to_order(order, customer_account):
     order.customer_account = customer_account
 
     refreshed_paid = (total_paid + applied_amount)
-    order.payment_status = "PAID" if refreshed_paid >= Decimal(str(order.total_amount)) else "UNPAID"
+    order.payment_status = resolve_order_payment_status(order.total_amount, refreshed_paid)
     order.save(update_fields=["customer_account", "payment_status"])
 
     return applied_amount
 
 
-def _normalize_payment_breakdown(amount, payment_type, cash_amount=None, online_amount=None):
+def _ensure_customer_account_for_order(order):
+    account = order.customer_account
 
-    amount = Decimal(str(amount))
+    if not account:
+        cleaned_phone = (order.customer_phone or "").strip()
+        if not cleaned_phone:
+            raise ValueError(
+                "Phone number is required to keep a pending balance or customer advance for this order."
+            )
 
-    if payment_type != "MIXED":
-        return amount, Decimal("0.00"), Decimal("0.00")
+        account = get_or_create_customer(
+            name=order.customer_name or "Customer",
+            contact_number=cleaned_phone,
+            address=order.delivery_address,
+        )
+        order.customer_account = account
+        order.save(update_fields=["customer_account"])
 
-    cash_amount = Decimal(str(cash_amount or 0))
-    online_amount = Decimal(str(online_amount or 0))
+    update_fields = []
 
-    if cash_amount < 0 or online_amount < 0:
-        raise ValueError("Cash and online amounts must be zero or greater")
+    if order.customer_name and account.name != order.customer_name:
+        account.name = order.customer_name
+        update_fields.append("name")
 
-    if cash_amount + online_amount <= 0:
-        raise ValueError("Enter a valid mixed payment amount")
+    if order.delivery_address and account.address != order.delivery_address:
+        account.address = order.delivery_address
+        update_fields.append("address")
 
-    if cash_amount + online_amount != amount:
-        raise ValueError("Cash and online amounts must match the collected amount")
+    if update_fields:
+        account.save(update_fields=update_fields)
 
-    return amount, cash_amount, online_amount
+    return account
+
+
+def _sync_order_customer_balance(order, desired_balance):
+    desired_balance = _to_money(desired_balance)
+    reference = f"ORDER-{order.id}"
+
+    if desired_balance == 0 and not order.customer_account:
+        return None
+
+    account = order.customer_account
+
+    if desired_balance != 0:
+        account = _ensure_customer_account_for_order(order)
+
+    _set_reference_balance(
+        account,
+        reference,
+        desired_balance,
+        payment_type="SYSTEM",
+        credit_description="Customer balance increased after payment sync",
+        debit_description="Customer balance reduced after payment sync",
+    )
+
+    if account and order.customer_account_id != account.id:
+        order.customer_account = account
+        order.save(update_fields=["customer_account"])
+
+    return account
+
+
+def _normalize_received_breakdown(received_amount, payment_type, cash_amount=None, online_amount=None):
+    received_amount = _to_money(received_amount)
+
+    if received_amount <= 0:
+        raise ValueError("Payment amount must be greater than zero")
+
+    if payment_type not in {"CASH", "ONLINE", "MIXED"}:
+        raise ValueError("Select a valid payment type")
+
+    if payment_type == "MIXED":
+        cash_received = _to_money(cash_amount)
+        online_received = _to_money(online_amount)
+
+        if cash_received < 0 or online_received < 0:
+            raise ValueError("Cash and online amounts must be zero or greater")
+
+        if cash_received + online_received <= 0:
+            raise ValueError("Enter a valid mixed payment amount")
+
+        if cash_received + online_received != received_amount:
+            raise ValueError("Cash and online amounts must match the collected amount")
+    elif payment_type == "CASH":
+        cash_received = received_amount
+        online_received = Decimal("0.00")
+    else:
+        cash_received = Decimal("0.00")
+        online_received = received_amount
+
+    return {
+        "received_amount": received_amount,
+        "cash_received": cash_received,
+        "online_received": online_received,
+    }
+
+
+def _allocate_payment_slice(target_amount, cash_pool, online_pool):
+    target_amount = _to_money(target_amount)
+    cash_pool = _to_money(cash_pool)
+    online_pool = _to_money(online_pool)
+
+    if target_amount <= 0:
+        return {
+            "cash_applied": Decimal("0.00"),
+            "online_applied": Decimal("0.00"),
+            "cash_remaining": cash_pool,
+            "online_remaining": online_pool,
+        }
+
+    cash_applied = min(cash_pool, target_amount)
+    online_applied = target_amount - cash_applied
+
+    if online_applied > online_pool:
+        raise ValueError("Payment breakdown does not cover the selected amount")
+
+    return {
+        "cash_applied": cash_applied,
+        "online_applied": online_applied,
+        "cash_remaining": cash_pool - cash_applied,
+        "online_remaining": online_pool - online_applied,
+    }
+
+
+def _record_order_payment(order, amount, payment_type, cash_amount, online_amount):
+    amount = _to_money(amount)
+
+    if amount <= 0:
+        return None
+
+    return OrderPayment.objects.create(
+        order=order,
+        amount=amount,
+        payment_type=payment_type,
+        cash_amount=_to_money(cash_amount),
+        online_amount=_to_money(online_amount),
+    )
+
+
+def _collect_previous_customer_due(
+    account,
+    amount,
+    payment_type,
+    *,
+    cash_amount=Decimal("0.00"),
+    online_amount=Decimal("0.00"),
+    exclude_order_id=None,
+):
+    remaining_to_allocate = _to_money(amount)
+    cash_pool = _to_money(cash_amount)
+    online_pool = _to_money(online_amount)
+    updated_orders = []
+
+    if remaining_to_allocate <= 0 or not account:
+        return updated_orders, cash_pool, online_pool
+
+    linked_orders = (
+        _customer_outstanding_queryset(
+            customer_account=account,
+            exclude_order_id=exclude_order_id,
+        )
+        .exclude(payment_status="PAID")
+        .order_by("completed_at", "created_at", "id")
+    )
+
+    for linked_order in linked_orders:
+        if remaining_to_allocate <= 0:
+            break
+
+        total_paid_before = get_order_amount_paid(linked_order)
+        order_remaining = get_order_remaining_amount(linked_order)
+
+        if order_remaining <= 0:
+            next_status = resolve_order_payment_status(linked_order.total_amount, total_paid_before)
+            if linked_order.payment_status != next_status:
+                linked_order.payment_status = next_status
+                linked_order.save(update_fields=["payment_status"])
+            continue
+
+        applied_amount = min(order_remaining, remaining_to_allocate)
+        slice_data = _allocate_payment_slice(applied_amount, cash_pool, online_pool)
+        cash_pool = slice_data["cash_remaining"]
+        online_pool = slice_data["online_remaining"]
+
+        _record_order_payment(
+            linked_order,
+            applied_amount,
+            payment_type,
+            slice_data["cash_applied"],
+            slice_data["online_applied"],
+        )
+
+        _record_customer_payment(
+            account,
+            f"ORDER-{linked_order.id}",
+            payment_type,
+            slice_data["cash_applied"],
+            slice_data["online_applied"],
+        )
+
+        total_paid_after = total_paid_before + applied_amount
+        linked_order.payment_status = resolve_order_payment_status(
+            linked_order.total_amount,
+            total_paid_after,
+        )
+        linked_order.save(update_fields=["payment_status"])
+
+        updated_orders.append(
+            {
+                "id": linked_order.id,
+                "applied_amount": applied_amount,
+                "payment_status": linked_order.payment_status,
+                "remaining_amount": max(Decimal("0.00"), order_remaining - applied_amount),
+            }
+        )
+
+        remaining_to_allocate -= applied_amount
+
+    if remaining_to_allocate > 0:
+        raise ValueError("Selected previous balance is no longer available. Refresh and try again.")
+
+    return updated_orders, cash_pool, online_pool
+
+
+def _record_customer_advance(order, account, amount, payment_type, cash_amount, online_amount):
+    amount = _to_money(amount)
+
+    if amount <= 0 or not account:
+        return Decimal("0.00")
+
+    reference = f"ORDER-{order.id}"
+    description = f"Customer advance received on Order #{order.id}"
+
+    if payment_type == "MIXED":
+        if cash_amount > 0:
+            record_debit(
+                account=account,
+                amount=cash_amount,
+                payment_type="CASH",
+                reference=reference,
+                description=description,
+            )
+
+        if online_amount > 0:
+            record_debit(
+                account=account,
+                amount=online_amount,
+                payment_type="ONLINE",
+                reference=reference,
+                description=description,
+            )
+
+        return amount
+
+    record_debit(
+        account=account,
+        amount=amount,
+        payment_type=payment_type,
+        reference=reference,
+        description=description,
+    )
+    return amount
+
+
+@transaction.atomic
+def apply_flexible_customer_payment(
+    order,
+    received_amount,
+    payment_type="CASH",
+    *,
+    cash_amount=None,
+    online_amount=None,
+    order_payment_amount=None,
+    collect_previous_due_amount=Decimal("0.00"),
+    save_extra_as_advance=False,
+    deduct_change=False,
+):
+    current_remaining = get_order_remaining_amount(order)
+    selected_order_amount = (
+        current_remaining
+        if order_payment_amount in [None, "", "null"]
+        else _to_money(order_payment_amount)
+    )
+    collect_previous_due_amount = _to_money(collect_previous_due_amount)
+    received_data = _normalize_received_breakdown(
+        received_amount,
+        payment_type,
+        cash_amount=cash_amount,
+        online_amount=online_amount,
+    )
+
+    if current_remaining <= 0 and selected_order_amount <= 0 and collect_previous_due_amount <= 0 and not save_extra_as_advance:
+        raise ValueError("Order has no remaining balance")
+
+    if selected_order_amount < 0 or collect_previous_due_amount < 0:
+        raise ValueError("Collected amounts cannot be negative")
+
+    if current_remaining > 0 and selected_order_amount <= 0:
+        raise ValueError("Enter how much is being collected for the current order")
+
+    if selected_order_amount > current_remaining:
+        raise ValueError("Current order collection cannot exceed the remaining balance")
+
+    customer_account = order.customer_account
+    needs_customer_account = (
+        selected_order_amount < current_remaining
+        or collect_previous_due_amount > 0
+        or save_extra_as_advance
+    )
+
+    if needs_customer_account:
+        customer_account = _ensure_customer_account_for_order(order)
+
+    if collect_previous_due_amount > 0:
+        previous_due_available = get_customer_previous_due_total(
+            customer_account=customer_account,
+            exclude_order_id=order.id,
+        )
+        if previous_due_available <= 0:
+            raise ValueError("This customer has no previous pending balance to collect")
+        if collect_previous_due_amount > previous_due_available:
+            raise ValueError("Selected previous balance exceeds the available pending amount")
+
+    total_selected_amount = selected_order_amount + collect_previous_due_amount
+
+    if total_selected_amount <= 0 and not save_extra_as_advance:
+        raise ValueError("Select a valid amount to collect")
+
+    if received_data["received_amount"] < total_selected_amount:
+        raise ValueError("Received amount cannot be less than the selected allocations")
+
+    extra_amount = received_data["received_amount"] - total_selected_amount
+
+    if extra_amount > 0:
+        if save_extra_as_advance:
+            customer_account = _ensure_customer_account_for_order(order)
+        else:
+            if payment_type == "ONLINE":
+                raise ValueError(
+                    "Online payment cannot exceed the selected payable amount unless the extra is saved as advance"
+                )
+
+            if received_data["cash_received"] < extra_amount:
+                raise ValueError("Change can only be returned from the cash portion")
+
+            if not deduct_change:
+                raise ChangeConfirmationRequired(extra_amount)
+
+    change_amount = Decimal("0.00") if save_extra_as_advance else extra_amount
+    cash_pool = received_data["cash_received"] - change_amount
+    online_pool = received_data["online_received"]
+
+    current_slice = _allocate_payment_slice(selected_order_amount, cash_pool, online_pool)
+    cash_pool = current_slice["cash_remaining"]
+    online_pool = current_slice["online_remaining"]
+
+    order_payment = _record_order_payment(
+        order,
+        selected_order_amount,
+        payment_type,
+        current_slice["cash_applied"],
+        current_slice["online_applied"],
+    )
+
+    previous_due_updates, cash_pool, online_pool = _collect_previous_customer_due(
+        customer_account,
+        collect_previous_due_amount,
+        payment_type,
+        cash_amount=cash_pool,
+        online_amount=online_pool,
+        exclude_order_id=order.id,
+    )
+
+    advance_saved = Decimal("0.00")
+    if save_extra_as_advance:
+        advance_saved = cash_pool + online_pool
+        if advance_saved > 0:
+            _record_customer_advance(
+                order,
+                customer_account,
+                advance_saved,
+                payment_type,
+                cash_pool,
+                online_pool,
+            )
+        cash_pool = Decimal("0.00")
+        online_pool = Decimal("0.00")
+
+    remaining_after_current = current_remaining - selected_order_amount
+    if remaining_after_current < 0:
+        remaining_after_current = Decimal("0.00")
+
+    desired_reference_balance = remaining_after_current - advance_saved
+    customer_account = _sync_order_customer_balance(order, desired_reference_balance)
+
+    total_paid_after = get_order_amount_paid(order)
+    order.payment_status = resolve_order_payment_status(order.total_amount, total_paid_after)
+    if customer_account and order.customer_account_id != customer_account.id:
+        order.customer_account = customer_account
+        order.save(update_fields=["payment_status", "customer_account"])
+    else:
+        order.save(update_fields=["payment_status"])
+
+    _record_payment_to_cash_drawer(
+        order,
+        cash_received=received_data["cash_received"],
+        online_received=received_data["online_received"],
+        change_amount=change_amount,
+        description="Customer payment received",
+    )
+
+    return {
+        "order_payment": order_payment,
+        "order_payment_amount": selected_order_amount,
+        "previous_due_collected": collect_previous_due_amount,
+        "advance_saved": advance_saved,
+        "change_amount": change_amount,
+        "remaining_amount": remaining_after_current,
+        "payment_status": order.payment_status,
+        "previous_due_updates": previous_due_updates,
+    }
 
 
 def _resolve_full_payment(
@@ -424,7 +882,7 @@ def sync_external_order_acceptance(order):
         and order.delivery_boy
         and order.order_status != "SCHEDULED"
     ):
-        desired_delivery_balance = Decimal("0.00") - Decimal(str(order.total_amount or 0))
+        desired_delivery_balance = Decimal("0.00") - get_order_remaining_amount(order)
 
     if order.delivery_boy:
         _set_reference_balance(
@@ -528,10 +986,7 @@ def update_order_details(
     if outstanding < 0:
         outstanding = Decimal("0.00")
 
-    if total_paid >= order.total_amount:
-        payment_status = "PAID"
-    else:
-        payment_status = "UNPAID"
+    payment_status = resolve_order_payment_status(order.total_amount, total_paid)
 
     next_customer_account = None
 
@@ -659,53 +1114,18 @@ def process_payment(
     online_amount=None,
     deduct_change=False
 ):
-    """
-    Core payment processor used by all flows.
-    """
-
-    total_paid = order.payments.aggregate(
-        total=Sum("amount")
-    )["total"] or Decimal("0.00")
-
-    remaining = order.total_amount - total_paid
-
-    payment_data = _resolve_full_payment(
-        remaining,
+    payment_result = apply_flexible_customer_payment(
+        order,
         received_amount,
         payment_type,
         cash_amount=cash_amount,
         online_amount=online_amount,
-        deduct_change=deduct_change
+        order_payment_amount=get_order_remaining_amount(order),
+        collect_previous_due_amount=Decimal("0.00"),
+        save_extra_as_advance=False,
+        deduct_change=deduct_change,
     )
-
-    payment = OrderPayment.objects.create(
-        order=order,
-        amount=payment_data["applied_amount"],
-        payment_type=payment_type,
-        cash_amount=payment_data["cash_applied"],
-        online_amount=payment_data["online_applied"]
-    )
-
-    _record_payment_to_cash_drawer(
-        order,
-        cash_received=payment_data["cash_received"],
-        online_received=payment_data["online_received"],
-        change_amount=payment_data["change_amount"],
-        description="Order payment received"
-    )
-
-    _record_customer_payment(
-        order.customer_account,
-        f"ORDER-{order.id}",
-        payment_type,
-        payment_data["cash_applied"],
-        payment_data["online_applied"]
-    )
-
-    order.payment_status = "PAID"
-    order.save(update_fields=["payment_status"])
-
-    return payment
+    return payment_result["order_payment"]
 
 
 # -----------------------------
@@ -772,7 +1192,7 @@ def dine_in_pay_later(order):
     No ledger entry is created yet.
     """
 
-    order.payment_status = "UNPAID"
+    order.payment_status = resolve_order_payment_status(order.total_amount, get_order_amount_paid(order))
     order.save(update_fields=["payment_status"])
 
     return order
@@ -848,7 +1268,7 @@ def takeaway_pay_later(order, name, phone, address):
         description="Customer owes for order"
     )
 
-    order.payment_status = "UNPAID"
+    order.payment_status = resolve_order_payment_status(order.total_amount, get_order_amount_paid(order))
     order.save(update_fields=["payment_status"])
 
     return order
@@ -860,19 +1280,38 @@ def collect_payment(
     payment_type="CASH",
     cash_amount=None,
     online_amount=None,
-    deduct_change=False
+    deduct_change=False,
+    order_payment_amount=None,
+    collect_previous_due_amount=Decimal("0.00"),
+    save_extra_as_advance=False,
+    apply_customer_advance=False,
 ):
+    reference = f"ORDER-{order.id}"
+    advance_applied = Decimal("0.00")
 
-    if order.payment_status == "PAID":
+    if order.payment_status == "PAID" and not apply_customer_advance:
         raise ValueError("Order already fully paid")
 
-    reference = f"ORDER-{order.id}"
+    if apply_customer_advance:
+        customer_account = order.customer_account
+
+        if not customer_account and order.customer_phone:
+            customer_context = get_customer_context_by_phone(order.customer_phone)
+            if customer_context and customer_context["account_id"]:
+                customer_account = LedgerAccount.objects.get(id=customer_context["account_id"])
+
+        if customer_account:
+            advance_applied = apply_customer_advance_to_order(order, customer_account)
 
     total_paid = order.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
     remaining = order.total_amount - total_paid
 
     if remaining <= 0:
-        raise ValueError("Order already fully paid")
+        if collect_previous_due_amount > 0:
+            raise ValueError("Use Ledger to collect previous balance once this order is fully paid")
+        if save_extra_as_advance:
+            raise ValueError("Advance cannot be saved from a fully paid order collection screen")
+        return order
 
     delivery_reference_balance = _get_reference_balance(order.delivery_boy, reference)
 
@@ -937,18 +1376,21 @@ def collect_payment(
             payment_data["online_applied"]
         )
 
-        order.payment_status = "PAID"
+        order.payment_status = resolve_order_payment_status(order.total_amount, get_order_amount_paid(order))
         order.save(update_fields=["payment_status"])
 
     else:
 
-        process_payment(
+        apply_flexible_customer_payment(
             order,
             received_amount,
             payment_type,
             cash_amount=cash_amount,
             online_amount=online_amount,
-            deduct_change=deduct_change
+            order_payment_amount=order_payment_amount,
+            collect_previous_due_amount=collect_previous_due_amount,
+            save_extra_as_advance=save_extra_as_advance,
+            deduct_change=deduct_change,
         )
 
     return order
@@ -1050,6 +1492,7 @@ def complete_unpaid_order(order, name, phone, address):
     )
 
     reference = f"ORDER-{order.id}"
+    remaining_balance = get_order_remaining_amount(order)
 
     if previous_customer_account and previous_customer_account != customer:
         _set_reference_balance(
@@ -1064,7 +1507,7 @@ def complete_unpaid_order(order, name, phone, address):
     _set_reference_balance(
         customer,
         reference,
-        Decimal(str(order.total_amount)),
+        remaining_balance,
         payment_type="SYSTEM",
         credit_description="Customer balance increased after completion",
         debit_description="Customer balance reduced after completion"
@@ -1082,7 +1525,7 @@ def complete_unpaid_order(order, name, phone, address):
 
     order.customer_account = customer
     order.order_status = "COMPLETED"
-    order.payment_status = "UNPAID"
+    order.payment_status = resolve_order_payment_status(order.total_amount, get_order_amount_paid(order))
     order.completed_at = timezone.now()
 
     order.save(update_fields=[

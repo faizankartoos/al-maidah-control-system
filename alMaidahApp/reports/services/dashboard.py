@@ -123,7 +123,7 @@ def _serialize_inventory_snapshot():
 def _serialize_open_unpaid_orders():
     queryset = (
         Order.objects
-        .filter(payment_status="UNPAID")
+        .exclude(payment_status="PAID")
         .exclude(order_status="CANCELLED")
         .order_by("-created_at", "-id")
     )
@@ -225,7 +225,7 @@ def get_dashboard_report(from_date, to_date):
     open_unpaid_orders = _serialize_open_unpaid_orders()
     scheduled_orders = _serialize_scheduled_orders()
     cancelled_orders = _serialize_cancelled_orders(from_date, to_date)
-    open_unpaid_queryset = Order.objects.filter(payment_status="UNPAID").exclude(order_status="CANCELLED")
+    open_unpaid_queryset = Order.objects.exclude(payment_status="PAID").exclude(order_status="CANCELLED")
     scheduled_orders_queryset = Order.objects.filter(order_status="SCHEDULED")
 
     created_orders_count = Order.objects.filter(

@@ -283,6 +283,26 @@ function normalizeFieldErrors(payload) {
   return normalized;
 }
 
+function buildAccountConflictMessage(conflictAccount) {
+  if (!conflictAccount) {
+    return "This phone number is already linked to another ledger account.";
+  }
+
+  const accountName = (conflictAccount.name || "Unnamed account").trim() || "Unnamed account";
+  const accountLabel = (conflictAccount.account_type_display || conflictAccount.account_type || "ledger account")
+    .toLowerCase();
+
+  if (!conflictAccount.is_active) {
+    return `This phone number is already reserved by archived ${accountLabel} "${accountName}". Open that account and restore or edit it instead of creating a duplicate.`;
+  }
+
+  if (conflictAccount.account_type === "VENDOR") {
+    return `This phone number is already linked to vendor account "${accountName}". Open Vendor Ledger and update the existing account there.`;
+  }
+
+  return `This phone number is already linked to ${accountLabel} "${accountName}". Open the existing account instead of creating a duplicate.`;
+}
+
 function buildParams(filters) {
   const params = {};
 
@@ -505,6 +525,101 @@ function CollectModal({
           >
             <InlineButtonContent busy={loading} busyLabel="Recording...">
               Confirm Collection
+            </InlineButtonContent>
+          </button>
+          <button
+            onClick={onClose}
+            className="rounded-2xl border border-slate-700 px-4 py-3 font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeliveryLedgerCollectModal({
+  order,
+  paymentType,
+  onPaymentTypeChange,
+  onClose,
+  onConfirm,
+  loading,
+}) {
+  if (!order) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[28px] border border-slate-800 bg-slate-950 p-6 shadow-[0_35px_90px_rgba(15,23,42,0.55)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-[0.28em] text-emerald-300">Rider Collection</div>
+            <h3 className="mt-2 text-2xl font-semibold">Collect Order #{order.id}</h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Choose how the rider is settling this order before the collection is recorded.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-2xl border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:text-white"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="mt-6 space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Order Type</div>
+              <div className="mt-2 text-xl font-semibold text-white">{orderTypeLabel(order.order_type)}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Collection Amount</div>
+              <div className="mt-2 text-xl font-semibold text-emerald-200">
+                {formatCurrency(order.remaining_amount)}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm text-slate-300">Settlement Type</label>
+            <div className="grid gap-3 grid-cols-2">
+              {["CASH", "ONLINE"].map((option) => {
+                const selected = paymentType === option;
+
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => onPaymentTypeChange(option)}
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      selected
+                        ? "border-emerald-500 bg-emerald-500/10"
+                        : "border-slate-800 bg-slate-900/60 hover:border-slate-600"
+                    }`}
+                  >
+                    <div className="font-semibold text-white">{option}</div>
+                    <div className="mt-1 text-xs text-slate-400">
+                      {option === "CASH" ? "Rider returned cash" : "Rider settled online"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex gap-3">
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="flex-1 rounded-2xl bg-emerald-500 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-500/60"
+          >
+            <InlineButtonContent busy={loading} busyLabel="Recording...">
+              Confirm Rider Collection
             </InlineButtonContent>
           </button>
           <button
@@ -920,6 +1035,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   const [dailyDate, setDailyDate] = useState(today);
 
   const [accountForm, setAccountForm] = useState(createEmptyAccountForm);
+  const [accountConflict, setAccountConflict] = useState(null);
   const [editingAccount, setEditingAccount] = useState(null);
   const [accountManagementUnlocked, setAccountManagementUnlocked] = useState(false);
   const [showAccountManagementUnlock, setShowAccountManagementUnlock] = useState(false);
@@ -942,6 +1058,10 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   const [collectState, setCollectState] = useState({
     account: null,
     amount: "",
+    payment_type: "CASH",
+  });
+  const [deliveryOrderCollectState, setDeliveryOrderCollectState] = useState({
+    order: null,
     payment_type: "CASH",
   });
   const [vendorEntryForm, setVendorEntryForm] = useState(createEmptyVendorEntryForm);
@@ -1266,12 +1386,14 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   const resetAccountEditor = () => {
     setEditingAccount(null);
     setAccountForm(createEmptyAccountForm());
+    setAccountConflict(null);
     setAccountFormErrors({});
   };
 
   const startVendorAccountCreate = () => {
     setActiveTab("ACCOUNTS");
     setEditingAccount(null);
+    setAccountConflict(null);
     setAccountForm({
       ...createEmptyAccountForm(),
       account_type: "VENDOR",
@@ -1295,6 +1417,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
       setSuccess("");
       setError("");
       setAccountFormErrors({});
+      setAccountConflict(null);
     });
   };
 
@@ -1326,6 +1449,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
   const handleSubmitAccount = async () => {
     setError("");
     setSuccess("");
+    setAccountConflict(null);
     setAccountFormErrors({});
 
     if (!accountForm.name.trim()) {
@@ -1339,8 +1463,9 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     try {
       const payload = {
         ...accountForm,
-        contact_number: accountForm.contact_number || null,
-        address: accountForm.address || null,
+        name: accountForm.name.trim(),
+        contact_number: accountForm.contact_number.trim() || null,
+        address: accountForm.address.trim() || null,
         opening_balance: accountForm.opening_balance || "0.00",
       };
 
@@ -1355,9 +1480,25 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
       await loadAccounts();
       setSuccess(editingAccount ? "Ledger account updated." : "Ledger account created.");
     } catch (requestError) {
+      const conflictAccount = requestError?.response?.data?.conflict_account || null;
       const fieldErrors = normalizeFieldErrors(requestError?.response?.data);
-      setAccountFormErrors(fieldErrors);
-      setError(getErrorMessage(requestError, editingAccount ? "Failed to update account." : "Failed to create account."));
+      const conflictMessage = conflictAccount ? buildAccountConflictMessage(conflictAccount) : "";
+      const finalFieldErrors = conflictMessage
+        ? {
+            ...fieldErrors,
+            contact_number: conflictMessage,
+          }
+        : fieldErrors;
+
+      setAccountConflict(conflictAccount);
+      setAccountFormErrors(finalFieldErrors);
+      setError(
+        conflictMessage
+          || getErrorMessage(
+            requestError,
+            editingAccount ? "Failed to update account." : "Failed to create account.",
+          ),
+      );
     } finally {
       setSavingAccount(false);
     }
@@ -1377,7 +1518,43 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
       setSuccess("");
       setError("");
       setAccountFormErrors({});
+      setAccountConflict(null);
     });
+  };
+
+  const handleOpenConflictingAccount = async () => {
+    if (!accountConflict) {
+      return;
+    }
+
+    setError("");
+    setSuccess("");
+
+    if (accountConflict.account_type === "VENDOR") {
+      setActiveTab("VENDOR_LEDGER");
+      setSelectedVendorId(String(accountConflict.id));
+      setVendorEntryForm((current) => ({
+        ...current,
+        account_id: String(accountConflict.id),
+      }));
+
+      try {
+        await loadVendorReport(String(accountConflict.id), vendorStatementFilters);
+      } catch (requestError) {
+        setError(getErrorMessage(requestError, "Unable to open the conflicting vendor account right now."));
+      }
+
+      return;
+    }
+
+    setActiveTab("ACCOUNTS");
+    setAccountFilters((current) => ({
+      ...current,
+      search: accountConflict.contact_number || accountConflict.name || "",
+      account_type: accountConflict.account_type === "CASH" ? "CASH" : accountConflict.account_type,
+      show_inactive: current.show_inactive || !accountConflict.is_active,
+      show_zero_balance: true,
+    }));
   };
 
   const handleOpenQuickDelete = (account) => {
@@ -1815,7 +1992,27 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     await loadDeliveryLedger(selectedDeliveryLedgerBoyId, nextFilters);
   };
 
-  const handleCollectDeliveryLedgerOrder = async (order) => {
+  const openDeliveryLedgerCollectModal = (order) => {
+    if (!order?.can_collect_from_rider) {
+      return;
+    }
+
+    setDeliveryOrderCollectState({
+      order,
+      payment_type: deliveryLedgerFilters.payment_type || "CASH",
+    });
+  };
+
+  const closeDeliveryLedgerCollectModal = () => {
+    setDeliveryOrderCollectState({
+      order: null,
+      payment_type: "CASH",
+    });
+  };
+
+  const handleCollectDeliveryLedgerOrder = async () => {
+    const order = deliveryOrderCollectState.order;
+
     if (!order?.can_collect_from_rider) {
       return;
     }
@@ -1825,12 +2022,13 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
     setSuccess("");
 
     try {
+      const paymentType = deliveryOrderCollectState.payment_type || "CASH";
       const payload = {
         amount: order.remaining_amount,
-        payment_type: deliveryLedgerFilters.payment_type,
+        payment_type: paymentType,
       };
 
-      if (deliveryLedgerFilters.payment_type === "CASH") {
+      if (paymentType === "CASH") {
         payload.cash_amount = order.remaining_amount;
       } else {
         payload.online_amount = order.remaining_amount;
@@ -1839,7 +2037,10 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
       await api.post(`/orders/${order.id}/collect-payment/`, payload);
       await refreshAll();
       await loadDeliveryLedger(selectedDeliveryLedgerBoyId, deliveryLedgerFilters);
-      setSuccess(`Collected ${formatCurrency(order.remaining_amount)} from rider for Order #${order.id}.`);
+      closeDeliveryLedgerCollectModal();
+      setSuccess(
+        `Collected ${formatCurrency(order.remaining_amount)} from rider for Order #${order.id} as ${paymentType}.`,
+      );
     } catch (requestError) {
       setError(getErrorMessage(requestError, "Unable to collect this rider order right now."));
     } finally {
@@ -2644,6 +2845,42 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                   </div>
                 ) : null}
 
+                {accountConflict ? (
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
+                    <div className="font-semibold">Existing account found for this phone number.</div>
+                    <div className="mt-2">
+                      {accountConflict.name || "Unnamed account"} • {accountConflict.account_type_display || accountConflict.account_type}
+                      {accountConflict.is_active ? " • Active" : " • Archived"}
+                    </div>
+                    <div className="mt-1 text-xs text-amber-200/80">
+                      {accountConflict.contact_number || "No phone"} • {accountConflict.address || "No address"}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={handleOpenConflictingAccount}
+                        className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm font-semibold text-amber-50 transition hover:bg-amber-400/20"
+                      >
+                        {accountConflict.account_type === "VENDOR" ? "Open Vendor Ledger" : "Reveal Existing Account"}
+                      </button>
+                      {!accountConflict.is_active ? (
+                        <button
+                          onClick={() =>
+                            setAccountFilters((current) => ({
+                              ...current,
+                              show_inactive: true,
+                              show_zero_balance: true,
+                              search: accountConflict.contact_number || accountConflict.name || "",
+                            }))
+                          }
+                          className="rounded-2xl border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:text-white"
+                        >
+                          Show Archived Accounts
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div>
                   <label className="mb-2 block text-sm text-slate-300">Account Type</label>
                   {accountForm.account_type === "VENDOR" ? (
@@ -2658,6 +2895,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                           ...current,
                           account_type: event.target.value,
                         }));
+                        setAccountConflict(null);
                         clearAccountFormError("account_type");
                       }}
                       className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
@@ -2696,6 +2934,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                         ...current,
                         name: event.target.value,
                       }));
+                      setAccountConflict(null);
                       clearAccountFormError("name");
                     }}
                     className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
@@ -2718,6 +2957,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                         ...current,
                         contact_number: event.target.value,
                       }));
+                      setAccountConflict(null);
                       clearAccountFormError("contact_number");
                     }}
                     className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
@@ -2739,6 +2979,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                         ...current,
                         address: event.target.value,
                       }));
+                      setAccountConflict(null);
                       clearAccountFormError("address");
                     }}
                     className={`min-h-[110px] w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
@@ -2764,6 +3005,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                         ...current,
                         opening_balance: event.target.value,
                       }));
+                      setAccountConflict(null);
                       clearAccountFormError("opening_balance");
                     }}
                     className={`w-full rounded-2xl border bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-sky-500 ${
@@ -3348,7 +3590,7 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
                               <div className="flex md:justify-end">
                                 {order.can_collect_from_rider ? (
                                   <button
-                                    onClick={() => handleCollectDeliveryLedgerOrder(order)}
+                                    onClick={() => openDeliveryLedgerCollectModal(order)}
                                     disabled={collectingDeliveryLedger}
                                     className="rounded-2xl bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
@@ -4340,6 +4582,22 @@ export default function LedgerTab({ navigationIntent, onNavigationHandled }) {
           }
           onConfirm={handleCollect}
           loading={collectLoading}
+        />
+      )}
+
+      {deliveryOrderCollectState.order && (
+        <DeliveryLedgerCollectModal
+          order={deliveryOrderCollectState.order}
+          paymentType={deliveryOrderCollectState.payment_type}
+          onPaymentTypeChange={(value) =>
+            setDeliveryOrderCollectState((current) => ({
+              ...current,
+              payment_type: value,
+            }))
+          }
+          onClose={closeDeliveryLedgerCollectModal}
+          onConfirm={handleCollectDeliveryLedgerOrder}
+          loading={collectingDeliveryLedger}
         />
       )}
 

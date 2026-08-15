@@ -335,6 +335,13 @@ export default function ManageOrdersTab({
   const [collectMethod, setCollectMethod] = useState("CASH");
   const [collectCashAmount, setCollectCashAmount] = useState("");
   const [collectOnlineAmount, setCollectOnlineAmount] = useState("");
+  const [collectMatchedCustomer, setCollectMatchedCustomer] = useState(null);
+  const [collectAdvanceEnabled, setCollectAdvanceEnabled] = useState(false);
+  const [collectPartialEnabled, setCollectPartialEnabled] = useState(false);
+  const [collectCurrentOrderAmount, setCollectCurrentOrderAmount] = useState("");
+  const [collectPreviousDueEnabled, setCollectPreviousDueEnabled] = useState(false);
+  const [collectPreviousDueAmount, setCollectPreviousDueAmount] = useState("");
+  const [collectSaveExtraAsAdvance, setCollectSaveExtraAsAdvance] = useState(false);
   const [collectError, setCollectError] = useState("");
   const [collectChangePrompt, setCollectChangePrompt] = useState("");
   const [collectBusy, setCollectBusy] = useState(false);
@@ -372,6 +379,23 @@ export default function ManageOrdersTab({
   const canCollectPayments =
     currentUser?.role === "ADMIN" ||
     (currentUser?.special_access || []).includes("COLLECT_PAYMENTS");
+  const collectOrderRemaining = Number(selectedOrder?.remaining_amount ?? selectedOrder?.total_amount ?? 0);
+  const collectAdvanceAvailable = Number(collectMatchedCustomer?.advance_available || 0);
+  const collectPreviousDueAvailable = Number(collectMatchedCustomer?.previous_due_available || 0);
+  const collectAdvanceAppliedPreview = collectAdvanceEnabled
+    ? Math.min(collectAdvanceAvailable, collectOrderRemaining)
+    : 0;
+  const collectCurrentOrderPayable = Math.max(collectOrderRemaining - collectAdvanceAppliedPreview, 0);
+  const collectSelectedOrderAmount = collectPartialEnabled
+    ? Number(collectCurrentOrderAmount || 0)
+    : collectCurrentOrderPayable;
+  const collectSelectedPreviousDueAmount = collectPreviousDueEnabled
+    ? Number(collectPreviousDueAmount || 0)
+    : 0;
+  const collectTotalSelectedAmount = collectSelectedOrderAmount + collectSelectedPreviousDueAmount;
+  const collectAdvanceSavePreview = collectSaveExtraAsAdvance
+    ? Math.max(Number(collectAmount || 0) - collectTotalSelectedAmount, 0)
+    : 0;
 
   function showCollectDeniedMessage() {
     setShowCollectDeniedToast(true);
@@ -381,6 +405,13 @@ export default function ManageOrdersTab({
   }
 
   function resetCollectModalState() {
+    setCollectMatchedCustomer(null);
+    setCollectAdvanceEnabled(false);
+    setCollectPartialEnabled(false);
+    setCollectCurrentOrderAmount("");
+    setCollectPreviousDueEnabled(false);
+    setCollectPreviousDueAmount("");
+    setCollectSaveExtraAsAdvance(false);
     setCollectError("");
     setCollectChangePrompt("");
     setCollectBusy(false);
@@ -388,9 +419,40 @@ export default function ManageOrdersTab({
 
   function closeCollectModal() {
     setShowCollectModal(false);
+    setCollectAmount("");
     setCollectCashAmount("");
     setCollectOnlineAmount("");
     resetCollectModalState();
+  }
+
+  async function loadCollectCustomerContext(order) {
+    if (!order?.customer_phone) {
+      setCollectMatchedCustomer(null);
+      return;
+    }
+
+    try {
+      const response = await api.get("/orders/customers/", {
+        params: {
+          q: order.customer_phone,
+          exclude_order_id: order.id,
+        },
+      });
+
+      const exactMatch = (response.data || []).find((row) => row.phone === order.customer_phone) || null;
+      setCollectMatchedCustomer(exactMatch);
+
+      if (!(Number(exactMatch?.previous_due_available || 0) > 0)) {
+        setCollectPreviousDueEnabled(false);
+        setCollectPreviousDueAmount("");
+      }
+
+      if (!exactMatch?.has_advance) {
+        setCollectAdvanceEnabled(false);
+      }
+    } catch {
+      setCollectMatchedCustomer(null);
+    }
   }
 
   function openCollectModalForOrder(order) {
@@ -401,6 +463,7 @@ export default function ManageOrdersTab({
     setCollectOnlineAmount("");
     resetCollectModalState();
     setShowCollectModal(true);
+    loadCollectCustomerContext(order);
   }
 
   function showCollectSuccessMessage(message) {
@@ -1204,16 +1267,60 @@ async function submitCollectPayment(forceDeductChange = false){
 
   setCollectError("")
 
-  const amount = Number(collectAmount)
+  const amount = Number(collectAmount || 0)
+  const currentOrderAmount = collectPartialEnabled
+    ? Number(collectCurrentOrderAmount || 0)
+    : collectCurrentOrderPayable
+  const previousDueAmount = collectPreviousDueEnabled
+    ? Number(collectPreviousDueAmount || 0)
+    : 0
 
-  if(amount <= 0){
+  if((!Number.isFinite(amount) || amount < 0) || (amount === 0 && !(collectAdvanceEnabled && collectCurrentOrderPayable === 0 && previousDueAmount === 0))){
     setCollectError("Enter a valid collection amount first.")
     return
   }
 
-  const remainingAmount = Number(selectedOrder.remaining_amount ?? selectedOrder.total_amount)
   const cashAmount = Number(collectCashAmount || 0)
   const onlineAmount = Number(collectOnlineAmount || 0)
+
+  if(collectPartialEnabled){
+    if(!selectedOrder?.customer_phone){
+      setCollectError("Phone number is required to keep a partial balance for this order.")
+      return
+    }
+
+    if(!Number.isFinite(currentOrderAmount) || currentOrderAmount <= 0){
+      setCollectError("Enter a valid current order amount.")
+      return
+    }
+
+    if(collectCurrentOrderPayable > 0 && currentOrderAmount >= collectCurrentOrderPayable){
+      setCollectError("Partial collection amount must be less than the current payable amount.")
+      return
+    }
+  }
+
+  if(collectPreviousDueEnabled){
+    if(!selectedOrder?.customer_phone){
+      setCollectError("Phone number is required to collect previous balance.")
+      return
+    }
+
+    if(!Number.isFinite(previousDueAmount) || previousDueAmount <= 0){
+      setCollectError("Enter a valid previous balance amount.")
+      return
+    }
+
+    if(previousDueAmount - collectPreviousDueAvailable > 0.009){
+      setCollectError("Previous balance amount cannot exceed the available due.")
+      return
+    }
+  }
+
+  if(collectSaveExtraAsAdvance && !selectedOrder?.customer_phone){
+    setCollectError("Phone number is required to save extra collection as customer advance.")
+    return
+  }
 
   if(collectMethod === "MIXED"){
     if(cashAmount < 0 || onlineAmount < 0){
@@ -1234,19 +1341,21 @@ async function submitCollectPayment(forceDeductChange = false){
     }
   }
 
-  if(amount < remainingAmount){
-    setCollectError("Full remaining amount is required. Partial collection is disabled.")
+  const selectedTotal = currentOrderAmount + previousDueAmount
+
+  if(amount < selectedTotal){
+    setCollectError("Received amount cannot be less than the selected current and previous balance amounts.")
     return
   }
 
-  if(collectMethod === "ONLINE" && amount > remainingAmount){
-    setCollectError("Online payment cannot exceed the remaining amount.")
+  if(collectMethod === "ONLINE" && amount > selectedTotal && !collectSaveExtraAsAdvance){
+    setCollectError("Online payment cannot exceed the selected payable amount unless the extra is saved as advance.")
     return
   }
 
-  const changeAmount = amount - remainingAmount
+  const changeAmount = collectSaveExtraAsAdvance ? 0 : amount - selectedTotal
 
-  if(collectMethod === "MIXED" && changeAmount > cashAmount){
+  if(collectMethod === "MIXED" && !collectSaveExtraAsAdvance && changeAmount > cashAmount){
     setCollectError("Change can only be returned from the cash portion.")
     return
   }
@@ -1267,6 +1376,10 @@ async function submitCollectPayment(forceDeductChange = false){
       body:JSON.stringify({
         amount:amount,
         payment_type:collectMethod,
+        apply_customer_advance: collectAdvanceEnabled,
+        order_payment_amount: currentOrderAmount,
+        collect_previous_due_amount: previousDueAmount,
+        save_extra_as_advance: collectSaveExtraAsAdvance,
         cash_amount: collectMethod === "MIXED" ? cashAmount : 0,
         online_amount: collectMethod === "MIXED" ? onlineAmount : 0,
         deduct_change: changeAmount > 0
@@ -1283,7 +1396,21 @@ async function submitCollectPayment(forceDeductChange = false){
 
     if(data.success){
       closeCollectModal()
-      showCollectSuccessMessage(`Payment recorded for Order #${selectedOrder.id}.`)
+      const successNotes = [`Payment recorded for Order #${selectedOrder.id}.`]
+
+      if(collectAdvanceEnabled && collectAdvanceAppliedPreview > 0){
+        successNotes.push(`Advance adjusted: Rs ${formatMoney(collectAdvanceAppliedPreview)}.`)
+      }
+
+      if(previousDueAmount > 0){
+        successNotes.push(`Previous balance collected: Rs ${formatMoney(previousDueAmount)}.`)
+      }
+
+      if(collectSaveExtraAsAdvance && collectAdvanceSavePreview > 0){
+        successNotes.push(`Saved as advance: Rs ${formatMoney(collectAdvanceSavePreview)}.`)
+      }
+
+      showCollectSuccessMessage(successNotes.join(" "))
       fetchOrders()
       return
     }
@@ -2768,7 +2895,7 @@ Payment Collection
 Collect Payment For Order #{selectedOrder.id}
 </h2>
 <div className="mt-2 text-sm text-slate-400">
-Record the final payment cleanly here. Partial collection is disabled for direct order collection.
+Record this order payment, optionally collect an older pending balance too, or save any deliberate extra as customer advance.
 </div>
 </div>
 
@@ -2796,6 +2923,22 @@ Close
 </div>
 </div>
 
+{collectMatchedCustomer ? (
+  <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-4">
+    <div className="text-sm font-semibold text-sky-100">
+      Customer match: {collectMatchedCustomer.name || "Customer"} {collectMatchedCustomer.phone ? `• ${collectMatchedCustomer.phone}` : ""}
+    </div>
+    <div className="mt-2 flex flex-wrap gap-3 text-sm">
+      <span className="rounded-full bg-slate-950/40 px-3 py-1 text-slate-200">
+        Advance available: ₹{formatMoney(collectAdvanceAvailable)}
+      </span>
+      <span className="rounded-full bg-slate-950/40 px-3 py-1 text-slate-200">
+        Previous due ready to collect: ₹{formatMoney(collectPreviousDueAvailable)}
+      </span>
+    </div>
+  </div>
+) : null}
+
 <div className="mt-5 space-y-4">
 <div>
 <label className="mb-2 block text-sm text-slate-300">Collected Amount</label>
@@ -2811,6 +2954,117 @@ className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 tex
 placeholder="Enter final collected amount"
 />
 </div>
+
+{collectAdvanceAvailable > 0 ? (
+  <label className="flex items-center gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+    <input
+      type="checkbox"
+      checked={collectAdvanceEnabled}
+      onChange={(e)=>{
+        setCollectAdvanceEnabled(e.target.checked)
+        setCollectError("")
+        setCollectChangePrompt("")
+      }}
+      className="h-4 w-4 accent-emerald-500"
+    />
+    Adjust available customer advance on this order first
+  </label>
+) : null}
+
+<div className="flex flex-wrap gap-2">
+  <button
+    type="button"
+    onClick={()=>{
+      setCollectPartialEnabled((current) => {
+        const nextValue = !current
+        if(!nextValue){
+          setCollectCurrentOrderAmount(String(collectCurrentOrderPayable || ""))
+        }
+        return nextValue
+      })
+      setCollectError("")
+      setCollectChangePrompt("")
+    }}
+    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+      collectPartialEnabled
+        ? "bg-amber-400 text-slate-950"
+        : "border border-slate-700 text-slate-200 hover:border-slate-500"
+    }`}
+  >
+    Partial Collection
+  </button>
+
+  <button
+    type="button"
+    onClick={()=>{
+      setCollectSaveExtraAsAdvance((current) => !current)
+      setCollectError("")
+      setCollectChangePrompt("")
+    }}
+    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+      collectSaveExtraAsAdvance
+        ? "bg-emerald-400 text-slate-950"
+        : "border border-slate-700 text-slate-200 hover:border-slate-500"
+    }`}
+  >
+    Save Extra As Advance
+  </button>
+</div>
+
+{collectPartialEnabled ? (
+  <div>
+    <label className="mb-2 block text-sm text-slate-300">Current Order Amount</label>
+    <input
+      type="number"
+      placeholder="How much is being collected for this order?"
+      value={collectCurrentOrderAmount}
+      onChange={(e)=>{
+        setCollectCurrentOrderAmount(e.target.value)
+        setCollectError("")
+        setCollectChangePrompt("")
+      }}
+      className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+    />
+  </div>
+) : null}
+
+{collectPreviousDueAvailable > 0 ? (
+  <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-4">
+    <label className="flex items-center gap-3 text-sm font-medium text-amber-50">
+      <input
+        type="checkbox"
+        checked={collectPreviousDueEnabled}
+        onChange={(e)=>{
+          const checked = e.target.checked
+          setCollectPreviousDueEnabled(checked)
+          if(checked && !collectPreviousDueAmount){
+            setCollectPreviousDueAmount(String(collectPreviousDueAvailable))
+          }
+          setCollectError("")
+          setCollectChangePrompt("")
+        }}
+        className="h-4 w-4 accent-amber-400"
+      />
+      Collect previous pending balance too
+    </label>
+
+    {collectPreviousDueEnabled ? (
+      <div className="mt-3">
+        <input
+          type="number"
+          placeholder="Previous due amount"
+          value={collectPreviousDueAmount}
+          onChange={(e)=>{
+            setCollectPreviousDueAmount(e.target.value)
+            setCollectError("")
+            setCollectChangePrompt("")
+          }}
+          className="w-full rounded-2xl border border-amber-400/20 bg-slate-900 px-4 py-3 text-white outline-none transition focus:border-amber-400"
+        />
+      </div>
+    ) : null}
+  </div>
+) : null}
 
 <div>
 <label className="mb-2 block text-sm text-slate-300">Method</label>
@@ -2866,7 +3120,15 @@ className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 tex
 	)}
 
 	<div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-xs leading-6 text-slate-400">
-	Less than the remaining amount is not allowed here. If the customer pays more than the balance, we will confirm that the extra amount is being returned as change from cash.
+	<div>Advance adjusted on this order: ₹{formatMoney(collectAdvanceAppliedPreview)}</div>
+	<div>Current order allocation: ₹{formatMoney(collectSelectedOrderAmount)}</div>
+	<div>Previous balance allocation: ₹{formatMoney(collectSelectedPreviousDueAmount)}</div>
+	<div>Total selected allocation: ₹{formatMoney(collectTotalSelectedAmount)}</div>
+	{collectSaveExtraAsAdvance ? (
+	  <div className="text-emerald-200">Extra above the selected allocation will be saved as advance. Preview: ₹{formatMoney(collectAdvanceSavePreview)}</div>
+	) : (
+	  <div>Extra above the selected allocation will be treated as change and confirmed before saving.</div>
+	)}
 	</div>
 
   {collectError ? (
