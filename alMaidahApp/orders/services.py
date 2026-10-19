@@ -98,10 +98,15 @@ def get_customer_context_by_phone(phone, exclude_order_id=None):
 
     order_count = order_count.count()
 
-    previous_due_available = get_customer_previous_due_total(
-        phone=cleaned_phone,
-        customer_account=customer_account,
-        exclude_order_id=exclude_order_id,
+    # Order history alone is not a ledger balance. Only report collectible
+    # customer due when there is an actual customer ledger for this phone.
+    previous_due_available = (
+        get_customer_previous_due_total(
+            customer_account=customer_account,
+            exclude_order_id=exclude_order_id,
+        )
+        if customer_account
+        else Decimal("0.00")
     )
 
     if not customer_account and not latest_order:
